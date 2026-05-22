@@ -1,0 +1,109 @@
+# =============================================================================
+# Enterprise RAG — .gitignore
+#
+# POLICY:
+#   • ONLY docs/  → local study notes (never GitHub)
+#   • Everything else in the project → GitHub (src, k8s, jenkins, infra, scripts, CI, …)
+#   • Plus standard ignores: build/, .env, IDE files (generated / secrets — not “project”)
+# =============================================================================
+
+# ═══ ONLY THIS FOLDER IS LOCAL-ONLY (your request) ═══
+docs/
+
+# ═══ Standard — generated or secret (not project source) ═══
+# --- Gradle / Java build ---
+.gradle/
+**/build/
+*.class
+*.jar
+*.war
+*.ear
+!gradle/wrapper/gradle-wrapper.jar
+hs_err_pid*
+replay_pid*
+.gradle/
+build/
+out/
+.idea/
+*.iml
+*.log
+*.class
+*.jar
+*.war
+*.zip
+node_modules/
+.DS_Store
+# --- Test & coverage artifacts ---
+**/.jqwik-database
+**/jacoco.exec
+**/test-results/
+**/reports/tests/
+
+# --- IDE ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.vscode/
+*.code-workspace
+.cursor/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Logs & temp ---
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.swp
+*~
+
+# --- Secrets & env (NEVER commit real values) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+credentials.json
+secrets.yaml
+secrets.yml
+**/secrets/
+kubeconfig
+kubeconfig.*
+!kubeconfig.example
+*.local.yml
+!**/application-local.yml
+
+# --- SonarQube / Checkmarx local output ---
+.scannerwork/
+.sonar/
+checkmarx/Reports/
+**/CxResults/
+
+# --- Docker (local only) ---
+.docker/
+
+# --- Optional local overrides (create if needed, never commit) ---
+docker-compose.override.yml
+docker-compose.local.yml
+
+# --- Archives & binaries produced locally ---
+out/
+bin/
+dist/
+target/
+*.zip
+*.tar.gz
+
+# --- JVM crash dumps ---
+java_pid*.hprof
+*.hprof

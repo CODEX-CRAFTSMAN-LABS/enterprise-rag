@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: query-service
+  namespace: enterprise-rag
+  labels:
+    app: query-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: query-service
+  template:
+    metadata:
+      labels:
+        app: query-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8082"
+    spec:
+      containers:
+        - name: query-service
+          image: enterprise-rag/query-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: rag-shared-config
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://postgres:5432/rag
+            - name: SPRING_DATA_REDIS_HOST
+              value: redis
+            - name: SPRING_AI_OLLAMA_BASE_URL
+              value: http://ollama:11434
+            - name: MANAGEMENT_OTLP_TRACING_ENDPOINT
+              value: http://jaeger:4318/v1/traces
+          readinessProbe:
+            httpGet:
+              path: /api/v1/query/health
+              port: 8082
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8082
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: query-service
+  namespace: enterprise-rag
+  labels:
+    app: query-service
+spec:
+  selector:
+    app: query-service
+  ports:
+    - port: 8082
+      targetPort: 8082
+      name: http

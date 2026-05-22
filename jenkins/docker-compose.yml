@@ -1,0 +1,31 @@
+# Local Jenkins for enterprise-rag (dev pipeline first).
+# Start: docker compose -f jenkins/docker-compose.yml up -d --build
+# UI:    http://localhost:8080  (initial admin password below)
+
+services:
+  jenkins:
+    build: .
+    image: enterprise-rag/jenkins-local:lts
+    container_name: rag-jenkins
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      # Colima / Linux Docker socket (override DOCKER_SOCK in .env if needed)
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      # kubectl config (Colima k8s context)
+      - ${KUBE_CONFIG:-${HOME}/.kube/config}:/var/jenkins_home/.kube/config:ro
+      # Optional: mount repo for Pipeline from local workspace (alternative to Git SCM)
+      - ..:/workspace/enterprise-rag:ro
+    environment:
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=true"
+      DOCKER_HOST: unix:///var/run/docker.sock
+    group_add:
+      # docker group on Linux; on Mac socket is often root-owned — container runs as root for local dev
+      - "0"
+    user: root
+    restart: unless-stopped
+
+volumes:
+  jenkins_home:

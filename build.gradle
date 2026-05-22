@@ -1,0 +1,32 @@
+plugins {
+    alias(libs.plugins.spring.boot) apply false
+    alias(libs.plugins.spring.dependency.management) apply false
+    alias(libs.plugins.spotless) apply false
+    id 'jacoco'
+}
+
+repositories {
+    mavenCentral()
+}
+
+apply from: 'gradle/jacoco.gradle'
+apply from: 'gradle/spotless.gradle'
+apply from: 'gradle/testing.gradle'
+
+subprojects {
+    group = 'com.enterprise.rag'
+    version = '0.1.0-SNAPSHOT'
+
+    repositories {
+        mavenCentral()
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        options.release = 17
+    }
+
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+    }
+}

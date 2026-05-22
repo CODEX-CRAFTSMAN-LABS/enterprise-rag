@@ -1,0 +1,24 @@
+-- Optional dev seed — NOT run automatically. Use for learning / manual testing.
+-- Run: docker exec -i rag-postgres psql -U rag -d rag < infra/postgres/seed-dev-example.sql
+--
+-- Prefer creating real data via API (upload + saga) so embeddings are valid.
+
+-- Example tenant-scoped document row (no file bytes — illustrative only)
+-- INSERT INTO documents (id, tenant_id, filename, content_type, size_bytes, status, content, created_at, updated_at)
+-- VALUES (
+--   '11111111-1111-1111-1111-111111111111',
+--   'acme-corp',
+--   'manual.txt',
+--   'text/plain',
+--   11,
+--   'INDEXED',
+--   decode('Hello world', 'escape'),
+--   NOW(),
+--   NOW()
+-- );
+
+-- Inspect data (run these anytime)
+-- SELECT tenant_id, status, count(*) FROM documents GROUP BY 1, 2;
+-- SELECT count(*) FROM document_chunks;
+-- SELECT count(*) FROM outbox_events WHERE published_at IS NULL;
+-- SELECT metadata->>'tenantId', count(*) FROM vector_store GROUP BY 1;

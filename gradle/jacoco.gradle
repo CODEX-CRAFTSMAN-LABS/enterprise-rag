@@ -1,0 +1,79 @@
+// Aggregated JaCoCo coverage for all Java subprojects.
+// Usage: ./gradlew test jacocoAggregatedReport coverageCheck
+
+subprojects { project ->
+    project.plugins.withId('java') {
+        project.apply plugin: 'jacoco'
+
+        project.jacoco {
+            toolVersion = '0.8.12'
+        }
+
+        project.tasks.named('jacocoTestReport', JacocoReport).configure {
+            dependsOn project.tasks.named('test')
+            reports {
+                xml.required = true
+                html.required = true
+                csv.required = false
+            }
+        }
+
+        project.tasks.named('test', Test).configure {
+            finalizedBy project.tasks.named('jacocoTestReport')
+        }
+
+        project.tasks.register('coverageCheck', JacocoCoverageVerification) {
+            dependsOn project.tasks.named('jacocoTestReport')
+            violationRules {
+                rule {
+                    limit {
+                        counter = 'LINE'
+                        minimum = project.findProperty('coverageMinimum')?.toBigDecimal() ?: 0.25
+                    }
+                }
+            }
+        }
+
+        project.tasks.named('check').configure {
+            dependsOn project.tasks.named('coverageCheck')
+        }
+    }
+}
+
+tasks.register('jacocoAggregatedReport', JacocoReport) {
+    group = 'verification'
+    description = 'Aggregates JaCoCo execution data from all subprojects'
+
+    dependsOn subprojects.collect { it.tasks.withType(Test) }
+
+    def javaProjects = subprojects.findAll { it.plugins.hasPlugin('java') }
+
+    additionalSourceDirs.setFrom(javaProjects.collect { it.sourceSets.main.allSource.srcDirs })
+    classDirectories.setFrom(
+        javaProjects.collect { project ->
+            project.sourceSets.main.output.classesDirs.collect { classesDir ->
+                project.fileTree(dir: classesDir, exclude: [
+                    '**/config/**',
+                    '**/*Application.class',
+                    '**/*Entity.class',
+                    '**/dto/**'
+                ])
+            }
+        }.flatten()
+    )
+    executionData.setFrom(javaProjects.collect { it.tasks.named('jacocoTestReport').get().executionData })
+
+    reports {
+        xml.required = true
+        xml.outputLocation = layout.buildDirectory.file('reports/jacoco/aggregated/jacocoTestReport.xml')
+        html.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/aggregated/html')
+    }
+}
+
+tasks.register('coverageCheck') {
+    group = 'verification'
+    description = 'Fails build if line coverage is below coverageMinimum (default 0.25)'
+    dependsOn subprojects.collect { it.tasks.findByName('coverageCheck') }.findAll { it != null }
+    dependsOn 'jacocoAggregatedReport'
+}

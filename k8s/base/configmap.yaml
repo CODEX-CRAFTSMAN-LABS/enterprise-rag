@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-shared-config
+data:
+  SPRING_PROFILES_ACTIVE: "docker"
+  POSTGRES_HOST: "postgres"
+  REDIS_HOST: "redis"
+  KAFKA_BOOTSTRAP: "kafka:9092"
+  OLLAMA_BASE_URL: "http://ollama:11434"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
+  PLATFORM_RATE_LIMIT_ENABLED: "true"
+  ENVIRONMENT: "placeholder"

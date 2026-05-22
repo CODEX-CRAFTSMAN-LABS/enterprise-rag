@@ -1,0 +1,41 @@
+{
+  "title": "Enterprise RAG Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Query asks (total)",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rag_query_ask_total)",
+          "legendFormat": "asks"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Document uploads (total)",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rag_ingestion_upload_total)",
+          "legendFormat": "uploads"
+        }
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Query latency (p95)",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(rag_query_ask_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    }
+  ]
+}

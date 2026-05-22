@@ -1,0 +1,50 @@
+spring:
+  config:
+    activate:
+      on-profile: docker
+  autoconfigure:
+    exclude: []
+  datasource:
+    url: jdbc:postgresql://postgres:5432/rag
+    username: rag
+    password: rag
+  data:
+    redis:
+      host: redis
+      port: 6379
+  ai:
+    model:
+      chat: ollama
+      embedding: ollama
+    ollama:
+      base-url: http://ollama:11434
+      chat:
+        options:
+          model: llama3.2
+      embedding:
+        options:
+          model: nomic-embed-text
+    vectorstore:
+      pgvector:
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        dimensions: 768
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 0.0
+
+platform:
+  rate-limit:
+    enabled: true
+    requests-per-minute: 120
+    redis-backed: true
+
+query:
+  cache:
+    ttl: 1h

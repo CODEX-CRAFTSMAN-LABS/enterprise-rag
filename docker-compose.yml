@@ -1,0 +1,233 @@
+# Full stack: infrastructure + ingestion-service + query-service
+# Usage:
+#   docker compose up -d --build
+#   docker compose run --rm ollama-init   # first time: pull models
+#   See docs/operations/docker.md
+
+name: enterprise-rag
+
+services:
+  # ─── Infrastructure ───────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - rag-pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - rag-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - rag-net
+
+  kafka:
+    # bitnami/kafka versioned tags removed from Docker Hub (2025) — use legacy archive
+    image: bitnamilegacy/kafka:3.9.0-debian-12-r0
+    container_name: rag-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_CFG_NODE_ID: 0
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 8
+      start_period: 15s
+    networks:
+      - rag-net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - rag-ollama:/root/.ollama
+    healthcheck:
+      # ollama image has no curl — use built-in CLI
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - rag-net
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: rag-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "Pulling models (first run may take several minutes)..."
+        ollama pull nomic-embed-text
+        ollama pull llama3.2
+        echo "Models ready."
+    networks:
+      - rag-net
+    profiles:
+      - init
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: rag-jaeger
+    profiles:
+      - monitoring
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - rag-net
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: rag-prometheus
+    profiles:
+      - monitoring
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      ingestion-service:
+        condition: service_started
+      query-service:
+        condition: service_started
+    networks:
+      - rag-net
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: rag-grafana
+    profiles:
+      - monitoring
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - rag-net
+
+  # ─── Application services ─────────────────────────────────────────
+  ingestion-service:
+    build:
+      context: .
+      dockerfile: ingestion-service/Dockerfile
+    image: enterprise-rag/ingestion-service:0.1.0
+    container_name: rag-ingestion-service
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # Cap heap — Colima often OOM-kills Java if MaxRAMPercentage=75 with Ollama+Kafka running
+      JAVA_OPTS: "-XX:+UseContainerSupport -Xms256m -Xmx512m"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    networks:
+      - rag-net
+    restart: unless-stopped
+
+  query-service:
+    build:
+      context: .
+      dockerfile: query-service/Dockerfile
+    image: enterprise-rag/query-service:0.1.0
+    container_name: rag-query-service
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      JAVA_OPTS: "-XX:+UseContainerSupport -Xms256m -Xmx512m"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+      ingestion-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8082/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    networks:
+      - rag-net
+    restart: unless-stopped
+
+networks:
+  rag-net:
+    driver: bridge
+
+volumes:
+  rag-pgdata:
+  rag-ollama:

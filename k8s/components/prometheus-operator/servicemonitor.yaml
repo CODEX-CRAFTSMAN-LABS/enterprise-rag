@@ -1,0 +1,18 @@
+# Requires: kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml
+# Or install kube-prometheus-stack, then: kubectl apply -k k8s/components/prometheus-operator
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: enterprise-rag-services
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [ingestion-service, query-service]
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 15s

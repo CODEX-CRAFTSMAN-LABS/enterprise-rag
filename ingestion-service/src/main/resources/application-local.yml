@@ -1,0 +1,9 @@
+# Health-only dev: ./gradlew :ingestion-service:bootRun
+# Document upload + outbox: start docker compose, then:
+#   SPRING_PROFILES_ACTIVE=docker ./gradlew :ingestion-service:bootRun
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration

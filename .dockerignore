@@ -1,0 +1,22 @@
+.git
+.gitignore
+.idea
+**/.gradle
+**/build
+**/bin
+# IDE "out" folders only — never exclude hexagonal ports/out or adapters/out
+ingestion-service/out/
+query-service/out/
+rag-common/out/
+!**/ports/out/**
+!**/adapters/out/**
+**/.classpath
+**/.project
+**/.settings
+**/*.iml
+**/reports
+**/.DS_Store
+docs/
+k8s/
+*.md
+!README.md

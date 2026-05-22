@@ -1,0 +1,30 @@
+// Test tasks: ./gradlew test (all) | ./gradlew unitTest | ./gradlew integrationTest
+subprojects { project ->
+    project.plugins.withId('java') {
+        project.tasks.register('unitTest', Test) {
+            group = 'verification'
+            description = 'Unit tests only (excludes @Tag(integration))'
+            testClassesDirs = project.sourceSets.test.output.classesDirs
+            classpath = project.sourceSets.test.runtimeClasspath
+            useJUnitPlatform {
+                excludeTags 'integration'
+            }
+        }
+
+        project.tasks.register('integrationTest', Test) {
+            group = 'verification'
+            description = 'Web/API integration tests (@Tag(integration))'
+            testClassesDirs = project.sourceSets.test.output.classesDirs
+            classpath = project.sourceSets.test.runtimeClasspath
+            useJUnitPlatform {
+                includeTags 'integration'
+            }
+        }
+    }
+}
+
+tasks.register('integrationTest') {
+    group = 'verification'
+    description = 'Runs integrationTest on all Java subprojects'
+    dependsOn subprojects.collect { it.tasks.findByName('integrationTest') }.findAll { it != null }
+}

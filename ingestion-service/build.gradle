@@ -1,0 +1,53 @@
+plugins {
+    alias(libs.plugins.spring.boot)
+    alias(libs.plugins.spring.dependency.management)
+    id 'java'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom libs.spring.ai.bom.get().toString()
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    implementation project(':rag-common')
+
+    implementation libs.spring.boot.starter.web
+    implementation libs.springdoc.openapi.webmvc
+    implementation libs.spring.boot.starter.data.jpa
+    implementation libs.spring.boot.starter.actuator
+    implementation libs.micrometer.registry.prometheus
+    implementation libs.micrometer.tracing.bridge.otel
+    implementation libs.opentelemetry.exporter.otlp
+    implementation libs.spring.boot.starter.validation
+    implementation libs.spring.boot.starter.data.redis
+    implementation libs.spring.kafka
+    implementation libs.postgresql
+    implementation libs.flyway.core
+    implementation libs.flyway.postgresql
+    implementation libs.vavr
+    implementation libs.spring.ai.ollama
+    implementation libs.spring.ai.pgvector
+    implementation libs.tika.core
+    implementation libs.tika.parsers
+
+    compileOnly libs.lombok
+    annotationProcessor libs.lombok
+
+    testImplementation libs.spring.boot.starter.test
+    testImplementation libs.testcontainers.junit
+    testImplementation libs.testcontainers.postgresql
+    testImplementation libs.testcontainers.kafka
+    testImplementation libs.jqwik
+}
+
+tasks.named('bootJar') {
+    archiveBaseName = 'ingestion-service'
+}

@@ -1,0 +1,353 @@
+{
+  "info": {
+    "_postman_id": "enterprise-rag-api",
+    "name": "Enterprise RAG",
+    "description": "CQRS Enterprise RAG APIs.\n\n**Write path (ingestion, :8081):** upload documents → Kafka saga → pgvector index.\n**Read path (query, :8082):** embed question → retrieve chunks → LLM answer.\n\n**Required header:** `X-Tenant-Id` (must match `tenantId` in ask body).\n\n**E2E flow:**\n1. Upload document (ingestion)\n2. Wait ~30s–2min for saga (`docker compose logs -f ingestion-service`)\n3. Ask question (query)\n\nImport environment: `Enterprise-RAG.postman_environment.json` (Docker) or set base URLs after K8s port-forward.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-Tenant-Id",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{tenantId}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "tenantId",
+      "value": "acme-corp"
+    },
+    {
+      "key": "ingestionBaseUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "queryBaseUrl",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "documentId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "E2E — Upload then Ask",
+      "description": "Run requests in order. After upload, wait for ingestion saga before Ask returns citations.",
+      "item": [
+        {
+          "name": "1. Upload document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 202 Accepted', function () {",
+                  "    pm.response.to.have.status(202);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 202) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('documentId', body.documentId);",
+                  "    pm.environment.set('documentId', body.documentId);",
+                  "    console.log('documentId saved:', body.documentId, 'status:', body.status);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "description": "PDF, TXT, MD, etc. (max 50MB). In Postman: choose a file from disk.",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{ingestionBaseUrl}}/api/v1/ingestion/documents",
+              "host": ["{{ingestionBaseUrl}}"],
+              "path": ["api", "v1", "ingestion", "documents"]
+            },
+            "description": "Multipart upload. Returns `documentId` and `status: PENDING`. Processing continues asynchronously via Kafka saga."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Ask question (after indexing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200 OK', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "pm.test('Response has answer', function () {",
+                  "    pm.expect(body).to.have.property('answer');",
+                  "});",
+                  "",
+                  "if (body.citations && body.citations.length === 0) {",
+                  "    console.warn('No citations — index may still be empty. Wait for saga or upload first.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"question\": \"What is this project about?\",\n  \"topK\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{queryBaseUrl}}/api/v1/query/ask",
+              "host": ["{{queryBaseUrl}}"],
+              "path": ["api", "v1", "query", "ask"]
+            },
+            "description": "RAG query: embed question, retrieve top-K chunks, generate answer with citations."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Ingestion Service (8081)",
+      "description": "Write path — document upload and health.",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{ingestionBaseUrl}}/api/v1/ingestion/health",
+              "host": ["{{ingestionBaseUrl}}"],
+              "path": ["api", "v1", "ingestion", "health"]
+            },
+            "description": "Liveness for load balancers. No tenant header required."
+          },
+          "response": []
+        },
+        {
+          "name": "Upload document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('documentId', body.documentId);",
+                  "    pm.environment.set('documentId', body.documentId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Select a file in Postman Body → form-data → file row."
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{ingestionBaseUrl}}/api/v1/ingestion/documents",
+              "host": ["{{ingestionBaseUrl}}"],
+              "path": ["api", "v1", "ingestion", "documents"]
+            },
+            "description": "Returns 202 with `{ documentId, status: \"PENDING\" }`."
+          },
+          "response": []
+        },
+        {
+          "name": "Actuator health",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{ingestionBaseUrl}}/actuator/health",
+              "host": ["{{ingestionBaseUrl}}"],
+              "path": ["actuator", "health"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "OpenAPI JSON",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{ingestionBaseUrl}}/v3/api-docs",
+              "host": ["{{ingestionBaseUrl}}"],
+              "path": ["v3", "api-docs"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Query Service (8082)",
+      "description": "Read path — RAG ask and health.",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{queryBaseUrl}}/api/v1/query/health",
+              "host": ["{{queryBaseUrl}}"],
+              "path": ["api", "v1", "query", "health"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Ask question",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"question\": \"What is this project about?\",\n  \"topK\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{queryBaseUrl}}/api/v1/query/ask",
+              "host": ["{{queryBaseUrl}}"],
+              "path": ["api", "v1", "query", "ask"]
+            },
+            "description": "Example 200 body:\n```json\n{\n  \"answer\": \"...\",\n  \"citations\": [\n    { \"documentId\": \"...\", \"chunkIndex\": 0, \"score\": 0.12 }\n  ]\n}\n```"
+          },
+          "response": []
+        },
+        {
+          "name": "Ask — custom question",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"question\": \"Summarize the uploaded document in three bullet points.\",\n  \"topK\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{queryBaseUrl}}/api/v1/query/ask",
+              "host": ["{{queryBaseUrl}}"],
+              "path": ["api", "v1", "query", "ask"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Actuator health",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{queryBaseUrl}}/actuator/health",
+              "host": ["{{queryBaseUrl}}"],
+              "path": ["actuator", "health"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "OpenAPI JSON",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{queryBaseUrl}}/v3/api-docs",
+              "host": ["{{queryBaseUrl}}"],
+              "path": ["v3", "api-docs"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

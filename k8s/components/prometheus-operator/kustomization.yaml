@@ -1,0 +1,7 @@
+# Optional — only apply when Prometheus Operator CRDs are installed
+# (e.g. kube-prometheus-stack). Not used by dev/prod overlays (standalone Prometheus).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - servicemonitor.yaml

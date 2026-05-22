@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  labels:
+    app: grafana
+data:
+  datasource.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus-Prod
+        uid: prometheus-prod
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          httpMethod: POST
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  labels:
+    app: grafana
+data:
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+      - name: enterprise-rag
+        orgId: 1
+        folder: Enterprise RAG Prod
+        type: file
+        disableDeletion: true
+        editable: false
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  labels:
+    app: grafana
+data:
+  rag-overview.json: |
+    {
+      "title": "Enterprise RAG — Prod Overview",
+      "uid": "rag-prod-overview",
+      "tags": ["enterprise-rag", "prod"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "15s",
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Ingestion — JVM memory used",
+          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus-prod"},
+          "targets": [
+            {
+              "expr": "sum(jvm_memory_used_bytes{service=\"ingestion-service\"})",
+              "legendFormat": "bytes"
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Query — JVM memory used",
+          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus-prod"},
+          "targets": [
+            {
+              "expr": "sum(jvm_memory_used_bytes{service=\"query-service\"})",
+              "legendFormat": "bytes"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "HTTP server requests (rate)",
+          "gridPos": {"h": 8, "w": 16, "x": 0, "y": 4},
+          "datasource": {"type": "prometheus", "uid": "prometheus-prod"},
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_count[5m])) by (application)",
+              "legendFormat": "{{application}}"
+            }
+          ]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.0
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: username
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: password
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "false"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  labels:
+    app: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+      name: http
+  type: ClusterIP

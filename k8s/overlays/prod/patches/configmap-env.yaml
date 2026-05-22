@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-shared-config
+data:
+  ENVIRONMENT: "prod"
+  PLATFORM_RATE_LIMIT_REQUESTS_PER_MINUTE: "60"
+  MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"

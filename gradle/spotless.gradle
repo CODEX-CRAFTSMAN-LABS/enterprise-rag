@@ -1,0 +1,20 @@
+// Code formatting — ./gradlew spotlessApply  |  ./gradlew spotlessCheck
+subprojects { project ->
+    project.plugins.withId('java') {
+        project.plugins.apply('com.diffplug.spotless')
+
+        project.spotless {
+            java {
+                target 'src/*/java/**/*.java'
+                googleJavaFormat('1.22.0')
+                removeUnusedImports()
+                trimTrailingWhitespace()
+                endWithNewline()
+            }
+        }
+
+        project.tasks.named('check').configure {
+            dependsOn project.tasks.named('spotlessCheck')
+        }
+    }
+}

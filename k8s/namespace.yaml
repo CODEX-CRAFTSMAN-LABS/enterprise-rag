@@ -1,0 +1,7 @@
+# DEPRECATED — use k8s/overlays/dev or k8s/overlays/prod (see k8s/README.md)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: enterprise-rag
+  labels:
+    app.kubernetes.io/part-of: enterprise-rag

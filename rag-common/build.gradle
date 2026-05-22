@@ -1,0 +1,27 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    api libs.vavr
+    implementation libs.spring.web
+    implementation libs.jackson.annotations
+    implementation libs.jackson.databind
+    compileOnly libs.jakarta.servlet.api
+    implementation libs.micrometer.core
+    implementation libs.bucket4j.core
+
+    compileOnly libs.lombok
+    annotationProcessor libs.lombok
+
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.assertj:assertj-core:3.26.3'
+    testImplementation libs.vavr
+}

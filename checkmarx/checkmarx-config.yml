@@ -1,0 +1,40 @@
+# Checkmarx SAST — reference configuration for Jenkins / CLI
+# Official plugin uses Jenkins UI; this file documents project settings for security team.
+#
+# Jenkins: set ENABLE_CHECKMARX=true and install Checkmarx Jenkins plugin
+# CLI: use CxConsolePlugin with these parameters
+
+project:
+  name: enterprise-rag
+  team: /CxServer/Enterprise
+
+scan:
+  preset: "Java Spring"          # or preset ID 36 (Checkmarx default Java)
+  incremental: true
+  full_scan_branches:
+    - main
+    - master
+
+thresholds:
+  # Fail pipeline if exceeded (align with Jenkinsfile CxScanBuilder)
+  high: 0
+  medium: 5
+  low: 10
+
+exclude:
+  folders:
+    - .git
+    - .gradle
+    - build
+    - docs
+    - infra
+    - k8s
+    - scripts
+  patterns:
+    - "**/*Test.java"
+    - "**/build/**"
+
+notes: |
+  - Store Checkmarx credentials in Jenkins Credential Store only.
+  - Do not commit server URLs with secrets.
+  - For GitHub-only teams without Checkmarx license, use GitHub Advanced Security / CodeQL as alternative.

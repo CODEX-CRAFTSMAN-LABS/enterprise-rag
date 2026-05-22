@@ -1,0 +1,165 @@
+// Jenkins — PRODUCTION pipeline
+// Job config: Pipeline from SCM → Script Path: jenkins/Jenkinsfile.prod
+// Branch: main | master only
+//
+// Credentials:
+//   kubeconfig-prod-id — production cluster (restricted RBAC)
+//   docker-registry
+//   checkmarx-credentials (optional)
+
+pipeline {
+    agent any
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '50'))
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        JAVA_HOME = tool name: 'jdk-17', type: 'jdk'
+        PATH = "${JAVA_HOME}/bin:${env.PATH}"
+        GRADLE_OPTS = '-Dorg.gradle.daemon=false'
+        COVERAGE_MINIMUM = "${env.COVERAGE_MINIMUM ?: '0.30'}"
+        ENV_NAME = 'prod'
+        K8S_NAMESPACE = 'enterprise-rag-prod'
+        K8S_OVERLAY = 'k8s/overlays/prod'
+        IMAGE_TAG = "prod-${env.BUILD_NUMBER}"
+        ENABLE_SONAR = 'true'
+        ENABLE_CHECKMARX = "${env.ENABLE_CHECKMARX ?: 'true'}"
+        DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'chmod +x gradlew'
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                sh './gradlew clean build jacocoAggregatedReport --no-daemon'
+            }
+            post {
+                always {
+                    junit allowEmptyResults: false, testResults: '**/build/test-results/test/*.xml'
+                }
+            }
+        }
+
+        stage('Coverage Gate') {
+            steps {
+                sh "./gradlew coverageCheck -PcoverageMinimum=${COVERAGE_MINIMUM} --no-daemon"
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'build/reports/jacoco/aggregated/**', fingerprint: true
+                }
+            }
+        }
+
+        stage('SonarQube') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh '''
+                        sonar-scanner -Dproject.settings=sonar-project.properties \
+                          -Dsonar.branch.name=main || echo "Sonar scan skipped if scanner missing"
+                    '''
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Checkmarx SAST') {
+            when { expression { env.ENABLE_CHECKMARX == 'true' } }
+            steps {
+                script {
+                    step([
+                        $class: 'CxScanBuilder',
+                        preset: '36',
+                        projectName: 'enterprise-rag-prod',
+                        teamPath: "${env.CHECKMARX_TEAM ?: '/CxServer'}",
+                        comment: "Prod build ${env.BUILD_NUMBER}",
+                        vulnerabilityThresholdResult: 'FAILURE',
+                        highThreshold: 0,
+                        mediumThreshold: 3,
+                        lowThreshold: 5,
+                        incremental: false,
+                        excludeFolders: '.git,build,.gradle,docs',
+                        fullScanbranch: 'main'
+                    ])
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                script {
+                    def reg = env.DOCKER_REGISTRY?.trim()
+                    def prefix = reg ? "${reg}/" : ''
+                    env.INGESTION_IMAGE = "${prefix}enterprise-rag/ingestion-service:${IMAGE_TAG}"
+                    env.QUERY_IMAGE = "${prefix}enterprise-rag/query-service:${IMAGE_TAG}"
+                }
+                sh '''
+                    docker build -f ingestion-service/Dockerfile -t ${INGESTION_IMAGE} .
+                    docker build -f query-service/Dockerfile -t ${QUERY_IMAGE} .
+                    docker tag ${INGESTION_IMAGE} ${INGESTION_IMAGE%%:*}:prod-latest
+                    docker tag ${QUERY_IMAGE} ${QUERY_IMAGE%%:*}:prod-latest
+                '''
+            }
+        }
+
+        stage('Push Images') {
+            when {
+                expression { return env.DOCKER_REGISTRY?.trim() }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-registry', usernameVariable: 'DR_USER', passwordVariable: 'DR_PASS')]) {
+                    sh '''
+                        echo "$DR_PASS" | docker login "$DOCKER_REGISTRY" -u "$DR_USER" --password-stdin
+                        docker push ${INGESTION_IMAGE}
+                        docker push ${QUERY_IMAGE}
+                        docker push ${INGESTION_IMAGE%%:*}:prod-latest
+                        docker push ${QUERY_IMAGE%%:*}:prod-latest
+                    '''
+                }
+            }
+        }
+
+        stage('Approve Production Deploy') {
+            steps {
+                timeout(time: 24, unit: 'HOURS') {
+                    input message: 'Deploy to PRODUCTION Kubernetes?', ok: 'Deploy', submitter: 'admin,release-managers'
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes (Prod)') {
+            steps {
+                sh '''
+                    kubectl apply -k ${K8S_OVERLAY}
+                    kubectl rollout status deployment/ingestion-service -n ${K8S_NAMESPACE} --timeout=600s
+                    kubectl rollout status deployment/query-service -n ${K8S_NAMESPACE} --timeout=600s
+                    kubectl rollout status deployment/prometheus -n ${K8S_NAMESPACE} --timeout=180s
+                    kubectl rollout status deployment/grafana -n ${K8S_NAMESPACE} --timeout=180s
+                '''
+            }
+        }
+    }
+
+    post {
+        success { echo "Production deploy complete — ${K8S_NAMESPACE}" }
+        failure { echo 'Production pipeline FAILED — no rollback automated; run kubectl rollout undo if needed.' }
+        always { cleanWs(deleteDirs: true) }
+    }
+}

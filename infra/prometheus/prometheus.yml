@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: ingestion-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['ingestion-service:8081']
+        labels:
+          service: ingestion-service
+
+  - job_name: query-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['query-service:8082']
+        labels:
+          service: query-service
