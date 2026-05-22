@@ -17,7 +17,8 @@ public class SagaEventDeserializer {
   }
 
   /** Handles legacy messages double-encoded by JsonSerializer on String payloads. */
-  private String unwrapJsonString(String payload) throws com.fasterxml.jackson.core.JsonProcessingException {
+  private String unwrapJsonString(String payload)
+      throws com.fasterxml.jackson.core.JsonProcessingException {
     String trimmed = payload.trim();
     if (trimmed.startsWith("\"")) {
       return objectMapper.readValue(trimmed, String.class);

@@ -5,8 +5,8 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
- * Publishes Kafka saga events only after the DB transaction commits, so downstream consumers
- * always see persisted state (e.g. extracted_text before chunk step).
+ * Publishes Kafka saga events only after the DB transaction commits, so downstream consumers always
+ * see persisted state (e.g. extracted_text before chunk step).
  */
 @Component
 public class SagaAfterCommitPublisher {

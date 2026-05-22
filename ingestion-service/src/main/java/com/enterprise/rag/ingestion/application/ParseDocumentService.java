@@ -2,13 +2,13 @@ package com.enterprise.rag.ingestion.application;
 
 import com.enterprise.rag.common.error.AppError;
 import com.enterprise.rag.common.error.NotFoundError;
+import com.enterprise.rag.ingestion.config.SagaAfterCommitPublisher;
 import com.enterprise.rag.ingestion.domain.Document;
 import com.enterprise.rag.ingestion.domain.DocumentId;
 import com.enterprise.rag.ingestion.domain.DocumentParsedEvent;
 import com.enterprise.rag.ingestion.domain.DocumentStatus;
 import com.enterprise.rag.ingestion.domain.DocumentUploadedEvent;
 import com.enterprise.rag.ingestion.domain.OutboxMessageId;
-import com.enterprise.rag.ingestion.config.SagaAfterCommitPublisher;
 import com.enterprise.rag.ingestion.domain.TenantId;
 import com.enterprise.rag.ingestion.ports.out.DocumentRepositoryPort;
 import com.enterprise.rag.ingestion.ports.out.SagaEventPublisherPort;
@@ -42,10 +42,12 @@ public class ParseDocumentService {
             .toEither(() -> (AppError) new NotFoundError("Document", event.documentId()))
             .flatMap(
                 doc -> {
-                  if (doc.status() == DocumentStatus.INDEXED || doc.status() == DocumentStatus.FAILED) {
+                  if (doc.status() == DocumentStatus.INDEXED
+                      || doc.status() == DocumentStatus.FAILED) {
                     return Either.right(documentId);
                   }
-                  if (doc.status() == DocumentStatus.PROCESSING && doc.extractedText().isDefined()) {
+                  if (doc.status() == DocumentStatus.PROCESSING
+                      && doc.extractedText().isDefined()) {
                     return Either.right(documentId);
                   }
                   return parseAndPublish(documentId, tenantId, event, doc);

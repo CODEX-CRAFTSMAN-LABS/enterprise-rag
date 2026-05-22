@@ -65,30 +65,24 @@ public class ChunkDocumentService {
         throw new TransientIngestionException(
             "extracted text not yet available for document " + documentId.asString());
       }
-      return Either.left(
-          (AppError) new IngestionError("chunk", "missing extracted text", null));
+      return Either.left((AppError) new IngestionError("chunk", "missing extracted text", null));
     }
     String text = document.extractedText().get();
     List<TextChunk> chunks =
         Chunker.chunk(text, properties.chunking().size(), properties.chunking().overlap());
     return validateChunks(chunks)
-        .flatMap(
-            ignored ->
-                saveChunksAndPublish(documentId, tenantId, event, chunks));
+        .flatMap(ignored -> saveChunksAndPublish(documentId, tenantId, event, chunks));
   }
 
   private Either<AppError, DocumentId> saveChunksAndPublish(
-      DocumentId documentId,
-      TenantId tenantId,
-      DocumentParsedEvent event,
-      List<TextChunk> chunks) {
-              chunkRepository.saveAll(documentId, tenantId, chunks);
-              DocumentChunkedEvent chunkedEvent =
-                  new DocumentChunkedEvent(
-                      OutboxMessageId.generate().asString(),
-                      event.documentId(),
-                      event.tenantId(),
-                      chunks.size());
+      DocumentId documentId, TenantId tenantId, DocumentParsedEvent event, List<TextChunk> chunks) {
+    chunkRepository.saveAll(documentId, tenantId, chunks);
+    DocumentChunkedEvent chunkedEvent =
+        new DocumentChunkedEvent(
+            OutboxMessageId.generate().asString(),
+            event.documentId(),
+            event.tenantId(),
+            chunks.size());
     afterCommitPublisher.runAfterCommit(() -> sagaEventPublisher.publishChunked(chunkedEvent));
     return Either.right(documentId);
   }

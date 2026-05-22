@@ -36,8 +36,7 @@ public class IngestionConfig {
       ConcurrentKafkaListenerContainerFactory<String, String> factory =
           new ConcurrentKafkaListenerContainerFactory<>();
       factory.setConsumerFactory(consumerFactory);
-      DefaultErrorHandler errorHandler =
-          new DefaultErrorHandler(new FixedBackOff(2_000L, 5L));
+      DefaultErrorHandler errorHandler = new DefaultErrorHandler(new FixedBackOff(2_000L, 5L));
       errorHandler.addRetryableExceptions(TransientIngestionException.class);
       factory.setCommonErrorHandler(errorHandler);
       return factory;
