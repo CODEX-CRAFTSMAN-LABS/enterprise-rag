@@ -23,7 +23,7 @@ hs_err_pid*
 replay_pid*
 .gradle/
 build/
-out/
+/out/
 .idea/
 *.iml
 *.log
@@ -93,11 +93,11 @@ checkmarx/Reports/
 docker-compose.override.yml
 docker-compose.local.yml
 
-# --- Archives & binaries produced locally ---
-out/
-bin/
-dist/
-target/
+# --- Archives & binaries produced locally (root only — do not match ports/out or adapters/out) ---
+/out/
+/bin/
+/dist/
+/target/
 *.zip
 *.tar.gz
 
