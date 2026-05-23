@@ -1,5 +1,40 @@
 // Aggregated JaCoCo coverage for all Java subprojects.
-// Usage: ./gradlew test jacocoAggregatedReport coverageCheck
+// Usage:
+//   ./gradlew test jacocoLogTestCoverage           — tests + console coverage (no clean needed)
+//   ./gradlew clean test jacocoLogTestCoverage     — full rebuild; clean runs before tests
+//   ./gradlew test jacocoAggregatedReport coverageCheck
+
+def jacocoCoverageExcludes = [
+    '**/config/**',
+    '**/*Application.class',
+    '**/*Entity.class',
+    '**/dto/**',
+    '**/ports/**',
+    '**/adapters/out/**',
+]
+
+def logJacocoLineCoverage = { File xmlFile, String label ->
+    if (!xmlFile.exists()) {
+        logger.lifecycle("${label}: no JaCoCo report at ${xmlFile}")
+        return
+    }
+    def text = xmlFile.getText('UTF-8')
+    def lineCounters = (text =~ /<counter type="LINE" missed="(\d+)" covered="(\d+)"\/>/)
+    if (!lineCounters.find()) {
+        logger.lifecycle("${label}: no LINE counter in JaCoCo report")
+        return
+    }
+    def last = null
+    lineCounters.each { last = it }
+    int missed = last[1] as int
+    int covered = last[2] as int
+    int total = missed + covered
+    double pct = total > 0 ? (covered * 100.0 / total) : 0.0
+    logger.lifecycle(String.format(
+        '%s: line coverage %.2f%% (%d/%d lines)',
+        label, pct, covered, total
+    ))
+}
 
 subprojects { project ->
     project.plugins.withId('java') {
@@ -9,26 +44,40 @@ subprojects { project ->
             toolVersion = '0.8.12'
         }
 
-        project.tasks.named('jacocoTestReport', JacocoReport).configure {
+        project.tasks.register('coverageCheck', JacocoCoverageVerification)
+
+        project.tasks.named('jacocoTestReport', JacocoReport).configure { report ->
             dependsOn project.tasks.named('test')
             reports {
                 xml.required = true
                 html.required = true
                 csv.required = false
             }
+            classDirectories.setFrom(
+                project.sourceSets.main.output.classesDirs.collect { classesDir ->
+                    project.fileTree(dir: classesDir, exclude: jacocoCoverageExcludes)
+                }
+            )
         }
 
         project.tasks.named('test', Test).configure {
             finalizedBy project.tasks.named('jacocoTestReport')
         }
 
-        project.tasks.register('coverageCheck', JacocoCoverageVerification) {
-            dependsOn project.tasks.named('jacocoTestReport')
-            violationRules {
-                rule {
-                    limit {
-                        counter = 'LINE'
-                        minimum = project.findProperty('coverageMinimum')?.toBigDecimal() ?: 0.25
+        project.afterEvaluate {
+            def reportTask = project.tasks.named('jacocoTestReport', JacocoReport)
+            project.tasks.named('coverageCheck', JacocoCoverageVerification).configure { check ->
+                dependsOn reportTask
+                def report = reportTask.get()
+                check.executionData.setFrom(report.executionData)
+                check.classDirectories.setFrom(report.classDirectories)
+                check.sourceDirectories.setFrom(report.sourceDirectories)
+                check.violationRules {
+                    rule {
+                        limit {
+                            counter = 'LINE'
+                            minimum = project.findProperty('coverageMinimum')?.toBigDecimal() ?: 0.75
+                        }
                     }
                 }
             }
@@ -36,6 +85,17 @@ subprojects { project ->
 
         project.tasks.named('check').configure {
             dependsOn project.tasks.named('coverageCheck')
+        }
+
+        project.tasks.register('jacocoLogTestCoverage') {
+            group = 'verification'
+            description = 'Prints JaCoCo line coverage for this module to the console'
+            dependsOn project.tasks.named('jacocoTestReport')
+            doLast {
+                def xml = project.tasks.named('jacocoTestReport', JacocoReport).get()
+                    .reports.xml.outputLocation.get().asFile
+                logJacocoLineCoverage(xml, project.path)
+            }
         }
     }
 }
@@ -52,12 +112,7 @@ tasks.register('jacocoAggregatedReport', JacocoReport) {
     classDirectories.setFrom(
         javaProjects.collect { project ->
             project.sourceSets.main.output.classesDirs.collect { classesDir ->
-                project.fileTree(dir: classesDir, exclude: [
-                    '**/config/**',
-                    '**/*Application.class',
-                    '**/*Entity.class',
-                    '**/dto/**'
-                ])
+                project.fileTree(dir: classesDir, exclude: jacocoCoverageExcludes)
             }
         }.flatten()
     )
@@ -73,7 +128,49 @@ tasks.register('jacocoAggregatedReport', JacocoReport) {
 
 tasks.register('coverageCheck') {
     group = 'verification'
-    description = 'Fails build if line coverage is below coverageMinimum (default 0.25)'
-    dependsOn subprojects.collect { it.tasks.findByName('coverageCheck') }.findAll { it != null }
+    description = 'Fails build if aggregated line coverage is below coverageMinimum (default 0.75)'
     dependsOn 'jacocoAggregatedReport'
+    doLast {
+        def xml = layout.buildDirectory.file('reports/jacoco/aggregated/jacocoTestReport.xml').get().asFile
+        def minimum = (findProperty('coverageMinimum') ?: '0.75').toBigDecimal()
+        def text = xml.getText('UTF-8')
+        def lineCounters = (text =~ /<counter type="LINE" missed="(\d+)" covered="(\d+)"\/>/)
+        if (!lineCounters.find()) {
+            throw new GradleException('No LINE counter in aggregated JaCoCo report')
+        }
+        def last = null
+        lineCounters.each { last = it }
+        int missed = last[1] as int
+        int covered = last[2] as int
+        int total = missed + covered
+        double ratio = total > 0 ? (covered / (double) total) : 0.0
+        logJacocoLineCoverage(xml, 'enterprise-rag (aggregated)')
+        if (ratio < minimum) {
+            throw new GradleException(
+                String.format(
+                    'Aggregated line coverage %.2f%% is below minimum %.2f%%',
+                    ratio * 100,
+                    minimum * 100
+                )
+            )
+        }
+    }
+}
+
+tasks.register('jacocoLogTestCoverage') {
+    group = 'verification'
+    description = 'Runs all tests, aggregates JaCoCo, and prints line coverage to the console'
+    dependsOn 'jacocoAggregatedReport',
+        subprojects.findAll { it.plugins.hasPlugin('java') }.collect { it.tasks.named('test') }
+    doLast {
+        subprojects.findAll { it.plugins.hasPlugin('java') }.each { p ->
+            def xml = p.tasks.named('jacocoTestReport', JacocoReport).get()
+                .reports.xml.outputLocation.get().asFile
+            logJacocoLineCoverage(xml, p.path)
+        }
+        logJacocoLineCoverage(
+            layout.buildDirectory.file('reports/jacoco/aggregated/jacocoTestReport.xml').get().asFile,
+            'enterprise-rag (aggregated)'
+        )
+    }
 }

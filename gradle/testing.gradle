@@ -1,6 +1,38 @@
 // Test tasks: ./gradlew test (all) | ./gradlew unitTest | ./gradlew integrationTest
+
+// macOS Finder duplicates (e.g. "ResponseMapperTest 2.class") break JUnit discovery.
+def removeDuplicateTestClassArtifacts = { File buildDir ->
+    def testClassesDir = new File(buildDir, 'classes/java/test')
+    if (!testClassesDir.exists()) {
+        return
+    }
+    testClassesDir.eachFileRecurse { file ->
+        if (file.isFile() && file.name ==~ /.*\s\d+\.class$/) {
+            logger.warn("Removing duplicate test class artifact: ${file}")
+            file.delete()
+        }
+    }
+}
+
 subprojects { project ->
     project.plugins.withId('java') {
+        project.tasks.withType(Test).configureEach {
+            doFirst {
+                removeDuplicateTestClassArtifacts(project.layout.buildDirectory.get().asFile)
+            }
+        }
+
+        project.tasks.named('compileTestJava', JavaCompile).configure {
+            doLast {
+                removeDuplicateTestClassArtifacts(project.layout.buildDirectory.get().asFile)
+            }
+        }
+
+        project.tasks.named('clean').configure {
+            doLast {
+                removeDuplicateTestClassArtifacts(project.layout.buildDirectory.get().asFile)
+            }
+        }
         project.tasks.register('unitTest', Test) {
             group = 'verification'
             description = 'Unit tests only (excludes @Tag(integration))'

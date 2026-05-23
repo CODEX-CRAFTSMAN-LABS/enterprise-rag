@@ -43,8 +43,8 @@ jobs:
       - name: Build and unit tests
         run: ./gradlew build jacocoAggregatedReport --no-daemon
 
-      - name: Coverage gate (25% line minimum)
-        run: ./gradlew coverageCheck -PcoverageMinimum=0.25 --no-daemon
+      - name: Coverage gate (75% line minimum)
+        run: ./gradlew coverageCheck -PcoverageMinimum=0.75 --no-daemon
 
       - name: Upload JaCoCo aggregated report
         uses: actions/upload-artifact@v4
@@ -69,8 +69,8 @@ jobs:
         with:
           paths: build/reports/jacoco/aggregated/jacocoTestReport.xml
           token: ${{ secrets.GITHUB_TOKEN }}
-          min-coverage-overall: 25
-          min-coverage-changed-files: 20
+          min-coverage-overall: 75
+          min-coverage-changed-files: 70
           title: 'Code Coverage'
           update-comment: true
 

@@ -1,0 +1,15 @@
+// Avoid "Unable to delete directory .../build" when running `./gradlew clean test` with
+// org.gradle.parallel=true — without ordering, clean and test can run at the same time.
+gradle.taskGraph.whenReady {
+    if (!it.allTasks.any { task -> task.name == 'clean' }) {
+        return
+    }
+    allprojects.each { project ->
+        def cleanTask = project.tasks.findByName('clean')
+        if (cleanTask != null) {
+            project.tasks.matching { task -> task != cleanTask }.configureEach {
+                it.mustRunAfter(cleanTask)
+            }
+        }
+    }
+}

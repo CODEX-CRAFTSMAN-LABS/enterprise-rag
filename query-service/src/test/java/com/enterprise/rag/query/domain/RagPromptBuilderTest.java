@@ -13,5 +13,18 @@ class RagPromptBuilderTest {
     String prompt = RagPromptBuilder.build("What is the refund policy?", chunks);
     assertThat(prompt).contains("Refund within 30 days");
     assertThat(prompt).contains("What is the refund policy?");
+    assertThat(prompt).contains("[doc=doc-1 chunk=0 score=0.9200]");
+  }
+
+  @Test
+  void should_trimQuestionAndJoinMultipleChunks() {
+    var chunks =
+        List.of(
+            new RetrievedChunk("doc-a", 0, "Section A", 0.5),
+            new RetrievedChunk("doc-b", 1, "Section B", 0.7));
+    String prompt = RagPromptBuilder.build("  summarize  ", chunks);
+    assertThat(prompt).contains("Section A");
+    assertThat(prompt).contains("Section B");
+    assertThat(prompt).contains("summarize");
   }
 }

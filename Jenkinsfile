@@ -30,7 +30,7 @@ pipeline {
         JAVA_HOME = tool name: 'jdk-17', type: 'jdk'
         PATH = "${JAVA_HOME}/bin:${env.PATH}"
         GRADLE_OPTS = '-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true'
-        COVERAGE_MINIMUM = '0.25'
+        COVERAGE_MINIMUM = '0.75'
         ENABLE_CHECKMARX = "${env.ENABLE_CHECKMARX ?: 'false'}"
         ENABLE_SONAR = "${env.ENABLE_SONAR ?: 'true'}"
     }

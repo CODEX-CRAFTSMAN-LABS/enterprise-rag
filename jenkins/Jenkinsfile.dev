@@ -20,7 +20,7 @@ pipeline {
         JAVA_HOME = tool name: 'jdk-17', type: 'jdk'
         PATH = "${JAVA_HOME}/bin:${env.PATH}"
         GRADLE_OPTS = '-Dorg.gradle.daemon=false'
-        COVERAGE_MINIMUM = '0.25'
+        COVERAGE_MINIMUM = '0.75'
         ENV_NAME = 'dev'
         K8S_NAMESPACE = 'enterprise-rag-dev'
         K8S_OVERLAY = 'k8s/overlays/dev'
