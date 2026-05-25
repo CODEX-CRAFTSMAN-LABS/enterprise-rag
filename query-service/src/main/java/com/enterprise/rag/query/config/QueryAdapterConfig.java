@@ -11,8 +11,8 @@ import com.enterprise.rag.query.ports.out.LlmPort;
 import com.enterprise.rag.query.ports.out.RetrievalPort;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -47,8 +47,13 @@ public class QueryAdapterConfig {
 
   @Bean
   @ConditionalOnMissingBean(LlmPort.class)
-  LlmPort llmPort(OllamaChatModel chatModel, CircuitBreaker llmCircuitBreaker) {
-    return new OllamaLlmAdapter(chatModel, llmCircuitBreaker);
+  LlmPort llmPort(
+      @Value("${spring.ai.ollama.base-url}") String baseUrl,
+      @Value("${query.ollama.request-timeout:60s}") java.time.Duration requestTimeout,
+      ObjectMapper objectMapper,
+      @Value("${spring.ai.ollama.chat.options.model}") String model,
+      CircuitBreaker llmCircuitBreaker) {
+    return new OllamaLlmAdapter(baseUrl, requestTimeout, objectMapper, model, llmCircuitBreaker);
   }
 
   @Bean

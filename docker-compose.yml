@@ -159,7 +159,7 @@ services:
     build:
       context: .
       dockerfile: ingestion-service/Dockerfile
-    image: enterprise-rag/ingestion-service:0.1.0
+    image: ${INGESTION_IMAGE:-enterprise-rag/ingestion-service:0.1.0}
     container_name: rag-ingestion-service
     ports:
       - "8081:8081"
@@ -194,7 +194,7 @@ services:
     build:
       context: .
       dockerfile: query-service/Dockerfile
-    image: enterprise-rag/query-service:0.1.0
+    image: ${QUERY_IMAGE:-enterprise-rag/query-service:0.1.0}
     container_name: rag-query-service
     ports:
       - "8082:8082"

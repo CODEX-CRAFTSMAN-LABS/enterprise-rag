@@ -74,12 +74,31 @@ jobs:
           title: 'Code Coverage'
           update-comment: true
 
+  sonar-ready:
+    name: Sonar readiness
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          SONAR_ENABLED: ${{ vars.SONAR_ENABLED }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ "${SONAR_ENABLED}" = "true" ] && [ -n "${SONAR_TOKEN}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Optional: SonarCloud — enable when SONAR_TOKEN secret is configured
   sonar:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
-    needs: build-and-test
-    if: ${{ vars.SONAR_ENABLED == 'true' }}
+    needs:
+      - build-and-test
+      - sonar-ready
+    if: ${{ needs.sonar-ready.outputs.enabled == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,18 +121,81 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  docker-build:
-    name: Docker Build (verify)
+  docker-images:
+    name: Docker Images
     runs-on: ubuntu-latest
     needs: build-and-test
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Validate Compose
         run: docker compose config --quiet
 
+      - name: Derive image tags
+        id: image-meta
+        shell: bash
+        run: |
+          owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          ref_tag="$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')"
+          sha_tag="sha-${GITHUB_SHA::12}"
+          echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
+          echo "ref_tag=${ref_tag}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${sha_tag}" >> "$GITHUB_OUTPUT"
+          echo "ingestion_image=ghcr.io/${owner_lc}/enterprise-rag-ingestion-service" >> "$GITHUB_OUTPUT"
+          echo "query_image=ghcr.io/${owner_lc}/enterprise-rag-query-service" >> "$GITHUB_OUTPUT"
+
       - name: Build ingestion image
-        run: docker build -f ingestion-service/Dockerfile -t enterprise-rag/ingestion-service:ci .
+        run: |
+          docker build \
+            -f ingestion-service/Dockerfile \
+            -t "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
+            .
 
       - name: Build query image
-        run: docker build -f query-service/Dockerfile -t enterprise-rag/query-service:ci .
+        run: |
+          docker build \
+            -f query-service/Dockerfile \
+            -t "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
+            .
+
+      - name: Verify image tags
+        run: |
+          docker image inspect "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}" >/dev/null
+          docker image inspect "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}" >/dev/null
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push ingestion image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}"
+          docker tag \
+            "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
+            "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.ref_tag }}"
+          docker push "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.ref_tag }}"
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            docker tag \
+              "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
+              "${{ steps.image-meta.outputs.ingestion_image }}:latest"
+            docker push "${{ steps.image-meta.outputs.ingestion_image }}:latest"
+          fi
+
+      - name: Push query image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}"
+          docker tag \
+            "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
+            "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.ref_tag }}"
+          docker push "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.ref_tag }}"
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            docker tag \
+              "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
+              "${{ steps.image-meta.outputs.query_image }}:latest"
+            docker push "${{ steps.image-meta.outputs.query_image }}:latest"
+          fi

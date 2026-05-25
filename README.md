@@ -156,6 +156,7 @@ JaCoCo guide: local **`docs/operations/code-coverage.md`**
 | **Jenkins Dev** | `jenkins/Jenkinsfile.dev` → namespace `enterprise-rag-dev` |
 | **Jenkins Prod** | `jenkins/Jenkinsfile.prod` → namespace `enterprise-rag-prod` |
 | **Jenkins local setup** | [jenkins/README.md](jenkins/README.md) + `docker compose -f jenkins/docker-compose.yml up -d --build` |
+| **Registry-backed staging** | GHCR image push in `.github/workflows/ci.yml` + `scripts/bootstrap-ec2-ubuntu.sh` + `scripts/deploy-ec2-compose.sh` |
 | **Coverage** | JaCoCo → `build/reports/jacoco/aggregated/html/` |
 | **SonarQube** | `sonar-project.properties` |
 | **Checkmarx** | `checkmarx/checkmarx-config.yml` (prod pipeline) |

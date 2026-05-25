@@ -57,6 +57,7 @@ When ready for full dev pipeline:
 | ID | Type | Notes |
 |----|------|--------|
 | `docker-registry` | Username/password | Only if `DOCKER_REGISTRY` is set |
+| `staging-ssh-key` | SSH private key | Required for EC2 Compose deploys |
 | SonarQube server | — | Named **`SonarQube`** in Configure System (optional) |
 
 **Kubernetes:** The dev Jenkinsfile runs `kubectl` on the agent. The local compose file mounts `~/.kube/config`. Ensure context works:
@@ -100,8 +101,14 @@ git commit -m "initial"
 | Name | Value | Why |
 |------|--------|-----|
 | `ENABLE_SONAR` | `false` | No Sonar server yet |
-| `ENABLE_DEPLOY` | `false` | K8s/infra optional for first run |
+| `ENABLE_DEPLOY` | `false` | Deploy optional for first run |
 | `ENABLE_CHECKMARX` | `false` | Dev default |
+| `DEPLOY_TARGET` | `ec2` | Preferred staging path |
+| `DOCKER_REGISTRY` | `ghcr.io` | Registry host for pushed images |
+| `IMAGE_NAMESPACE` | `codex-craftsman-labs` | Lowercase GHCR namespace |
+| `STAGING_SSH_HOST` | `ec2-public-dns` | Target staging VM |
+| `STAGING_SSH_USER` | `ubuntu` | Default Ubuntu EC2 user |
+| `STAGING_PATH` | `/opt/enterprise-rag` | Remote compose directory |
 
 Stages that will run:
 
@@ -111,9 +118,25 @@ Stages that will run:
 4. Docker Build (both images)  
 5. Skip Push / Deploy / Sonar  
 
-When K8s is ready:
+When staging is ready:
 
 ```bash
+DOCKER_REGISTRY=ghcr.io
+IMAGE_NAMESPACE=codex-craftsman-labs
+ENABLE_DEPLOY=true
+```
+
+The dev pipeline will then:
+
+1. Push both service images to the configured registry
+2. SSH to the EC2 host
+3. Copy `docker-compose.yml` + `infra/`
+4. Run `docker compose pull && docker compose up -d`
+
+If you still want the old Kubernetes path:
+
+```bash
+DEPLOY_TARGET=k8s
 ENABLE_DEPLOY=true
 ```
 
@@ -140,7 +163,7 @@ Checkout
   → SonarQube (optional)
   → Docker Build  ← ingestion-service + query-service images
   → Push Images (if DOCKER_REGISTRY set)
-  → Deploy to Kubernetes (if ENABLE_DEPLOY=true)
+  → Deploy to EC2 Compose (preferred) or Kubernetes
 ```
 
 ---
@@ -153,6 +176,8 @@ Checkout
 | `kubectl: connection refused` | Start cluster: `colima start --kubernetes`; `kubectl config use-context colima` |
 | `jdk-17` not found | Add JDK 17 tool named exactly `jdk-17` in Global Tools |
 | Sonar fails | Set `ENABLE_SONAR=false` until SonarQube server is configured |
+| EC2 deploy fails over SSH | Verify `staging-ssh-key`, `STAGING_SSH_HOST`, and that Docker is installed on the VM |
+| EC2 deploy fails pulling images | Verify `docker-registry` credentials can pull from `DOCKER_REGISTRY` |
 | Deploy fails (CrashLoop) | K8s overlay has no Postgres/Kafka/Ollama — use Docker Compose for full stack or add infra manifests |
 | Gradle OOM on agent | Job env: `GRADLE_OPTS=-Dorg.gradle.daemon=false -Xmx1024m` |
 

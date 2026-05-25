@@ -66,6 +66,8 @@ platform:
 query:
   cache:
     ttl: 1h
+  ollama:
+    request-timeout: 180s
 
 resilience4j:
   circuitbreaker:

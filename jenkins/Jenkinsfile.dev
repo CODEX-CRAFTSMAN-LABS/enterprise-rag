@@ -29,6 +29,11 @@ pipeline {
         ENABLE_CHECKMARX = 'false'
         ENABLE_DEPLOY = "${env.ENABLE_DEPLOY ?: 'true'}"
         DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
+        IMAGE_NAMESPACE = "${env.IMAGE_NAMESPACE ?: 'codex-craftsman-labs'}"
+        DEPLOY_TARGET = "${env.DEPLOY_TARGET ?: 'ec2'}"
+        STAGING_SSH_HOST = "${env.STAGING_SSH_HOST ?: ''}"
+        STAGING_SSH_USER = "${env.STAGING_SSH_USER ?: 'ubuntu'}"
+        STAGING_PATH = "${env.STAGING_PATH ?: '/opt/enterprise-rag'}"
     }
 
     stages {
@@ -76,15 +81,18 @@ pipeline {
             steps {
                 script {
                     def reg = env.DOCKER_REGISTRY?.trim()
-                    def prefix = reg ? "${reg}/" : ''
-                    env.INGESTION_IMAGE = "${prefix}enterprise-rag/ingestion-service:${IMAGE_TAG}"
-                    env.QUERY_IMAGE = "${prefix}enterprise-rag/query-service:${IMAGE_TAG}"
+                    def namespace = env.IMAGE_NAMESPACE?.trim()
+                    def prefix = reg ? "${reg}/${namespace}" : "enterprise-rag"
+                    env.INGESTION_IMAGE = "${prefix}/enterprise-rag-ingestion-service:${IMAGE_TAG}"
+                    env.QUERY_IMAGE = "${prefix}/enterprise-rag-query-service:${IMAGE_TAG}"
+                    env.INGESTION_IMAGE_LATEST = "${prefix}/enterprise-rag-ingestion-service:staging-latest"
+                    env.QUERY_IMAGE_LATEST = "${prefix}/enterprise-rag-query-service:staging-latest"
                 }
                 sh '''
                     docker build -f ingestion-service/Dockerfile -t ${INGESTION_IMAGE} .
                     docker build -f query-service/Dockerfile -t ${QUERY_IMAGE} .
-                    docker tag ${INGESTION_IMAGE} ${INGESTION_IMAGE%%:*}:dev-latest
-                    docker tag ${QUERY_IMAGE} ${QUERY_IMAGE%%:*}:dev-latest
+                    docker tag ${INGESTION_IMAGE} ${INGESTION_IMAGE_LATEST}
+                    docker tag ${QUERY_IMAGE} ${QUERY_IMAGE_LATEST}
                 '''
             }
         }
@@ -99,15 +107,43 @@ pipeline {
                         echo "$DR_PASS" | docker login "$DOCKER_REGISTRY" -u "$DR_USER" --password-stdin
                         docker push ${INGESTION_IMAGE}
                         docker push ${QUERY_IMAGE}
-                        docker push ${INGESTION_IMAGE%%:*}:dev-latest
-                        docker push ${QUERY_IMAGE%%:*}:dev-latest
+                        docker push ${INGESTION_IMAGE_LATEST}
+                        docker push ${QUERY_IMAGE_LATEST}
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EC2 (Staging)') {
+            when {
+                expression {
+                    env.ENABLE_DEPLOY == 'true' &&
+                    env.DEPLOY_TARGET == 'ec2' &&
+                    env.STAGING_SSH_HOST?.trim() &&
+                    env.DOCKER_REGISTRY?.trim()
+                }
+            }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'staging-ssh-key', keyFileVariable: 'SSH_KEY'),
+                    usernamePassword(credentialsId: 'docker-registry', usernameVariable: 'DR_USER', passwordVariable: 'DR_PASS')
+                ]) {
+                    sh '''
+                        export SSH_KEY_PATH="$SSH_KEY"
+                        export REGISTRY_USERNAME="$DR_USER"
+                        export REGISTRY_PASSWORD="$DR_PASS"
+                        ./scripts/deploy-ec2-compose.sh
                     '''
                 }
             }
         }
 
         stage('Deploy to Kubernetes (Dev)') {
-            when { expression { env.ENABLE_DEPLOY == 'true' } }
+            when {
+                expression {
+                    env.ENABLE_DEPLOY == 'true' && env.DEPLOY_TARGET == 'k8s'
+                }
+            }
             steps {
                 sh '''
                     kubectl version --client || true
