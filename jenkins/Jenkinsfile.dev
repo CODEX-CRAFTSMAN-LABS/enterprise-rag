@@ -3,8 +3,12 @@
 // Branch: develop | feature/*
 //
 // Credentials:
-//   kubeconfig-dev-id  — kubeconfig file for dev cluster (Secret file)
-//   docker-registry    — optional registry push (username/password)
+//   staging-ssh-key  — SSH private key for the app EC2 host
+//
+// Required environment:
+//   AWS_REGION
+//   AWS_ACCOUNT_ID or ECR_REGISTRY
+//   STAGING_SSH_HOST
 
 pipeline {
     agent any
@@ -12,7 +16,7 @@ pipeline {
     options {
         buildDiscarder(logRotator(numToKeepStr: '30'))
         timestamps()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
         disableConcurrentBuilds()
     }
 
@@ -24,23 +28,46 @@ pipeline {
         ENV_NAME = 'dev'
         K8S_NAMESPACE = 'enterprise-rag-dev'
         K8S_OVERLAY = 'k8s/overlays/dev'
-        IMAGE_TAG = "dev-${env.BUILD_NUMBER}"
         ENABLE_SONAR = "${env.ENABLE_SONAR ?: 'true'}"
         ENABLE_CHECKMARX = 'false'
         ENABLE_DEPLOY = "${env.ENABLE_DEPLOY ?: 'true'}"
-        DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
-        IMAGE_NAMESPACE = "${env.IMAGE_NAMESPACE ?: 'codex-craftsman-labs'}"
         DEPLOY_TARGET = "${env.DEPLOY_TARGET ?: 'ec2'}"
+        AWS_REGION = "${env.AWS_REGION ?: ''}"
+        AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: ''}"
+        ECR_REGISTRY = "${env.ECR_REGISTRY ?: ''}"
         STAGING_SSH_HOST = "${env.STAGING_SSH_HOST ?: ''}"
         STAGING_SSH_USER = "${env.STAGING_SSH_USER ?: 'ubuntu'}"
         STAGING_PATH = "${env.STAGING_PATH ?: '/opt/enterprise-rag'}"
+        OLLAMA_IMAGE = "${env.OLLAMA_IMAGE ?: 'alpine/ollama:0.23.2'}"
+        GIT_REPO_URL = "${env.GIT_REPO_URL ?: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git'}"
+        GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
-                sh 'chmod +x gradlew scripts/*.sh 2>/dev/null || chmod +x gradlew'
+                script {
+                    def branch = params.GIT_BRANCH?.trim()
+                    if (!branch) {
+                        error('Set GIT_BRANCH parameter (branch name to build).')
+                    }
+                    env.BRANCH_NAME = branch
+
+                    def gitArgs = [
+                        branch: branch,
+                        url: env.GIT_REPO_URL
+                    ]
+                    if (env.GIT_CREDENTIALS_ID?.trim()) {
+                        gitArgs.credentialsId = env.GIT_CREDENTIALS_ID.trim()
+                    }
+                    git(gitArgs)
+                }
+                sh '''
+                    chmod +x gradlew
+                    if [ -d scripts ]; then
+                      chmod +x scripts/*.sh
+                    fi
+                '''
             }
         }
 
@@ -68,7 +95,7 @@ pipeline {
                     sh '''
                         if command -v sonar-scanner >/dev/null 2>&1; then
                           sonar-scanner -Dproject.settings=sonar-project.properties \
-                            -Dsonar.branch.name=develop
+                            -Dsonar.branch.name="${BRANCH_NAME:-develop}"
                         else
                           echo "Skipping Sonar — scanner not installed"
                         fi
@@ -77,40 +104,77 @@ pipeline {
             }
         }
 
-        stage('Docker Build & Tag') {
+        stage('Derive Image Metadata') {
             steps {
                 script {
-                    def reg = env.DOCKER_REGISTRY?.trim()
-                    def namespace = env.IMAGE_NAMESPACE?.trim()
-                    def prefix = reg ? "${reg}/${namespace}" : "enterprise-rag"
-                    env.INGESTION_IMAGE = "${prefix}/enterprise-rag-ingestion-service:${IMAGE_TAG}"
-                    env.QUERY_IMAGE = "${prefix}/enterprise-rag-query-service:${IMAGE_TAG}"
-                    env.INGESTION_IMAGE_LATEST = "${prefix}/enterprise-rag-ingestion-service:staging-latest"
-                    env.QUERY_IMAGE_LATEST = "${prefix}/enterprise-rag-query-service:staging-latest"
+                    if (!env.AWS_REGION?.trim()) {
+                        error('Set AWS_REGION for ECR operations.')
+                    }
+
+                    def branchName = env.BRANCH_NAME?.trim()
+                    if (!branchName) {
+                        branchName = sh(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
+                    }
+
+                    def registry = env.ECR_REGISTRY?.trim()
+                    if (!registry) {
+                        if (!env.AWS_ACCOUNT_ID?.trim()) {
+                            error('Set AWS_ACCOUNT_ID or ECR_REGISTRY for ECR image publishing.')
+                        }
+                        registry = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+                    }
+
+                    env.REF_TAG = branchName.toLowerCase().replaceAll('[^a-z0-9._-]', '-')
+                    env.GIT_SHA_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
+                    env.IMAGE_TAG = "sha-${env.GIT_SHA_SHORT}"
+                    env.ECR_REGISTRY = registry
+                    env.ECR_INGESTION_REPOSITORY = 'enterprise-rag-ingestion-service'
+                    env.ECR_QUERY_REPOSITORY = 'enterprise-rag-query-service'
+                    env.INGESTION_IMAGE = "${registry}/${env.ECR_INGESTION_REPOSITORY}:${env.IMAGE_TAG}"
+                    env.QUERY_IMAGE = "${registry}/${env.ECR_QUERY_REPOSITORY}:${env.IMAGE_TAG}"
+                    env.INGESTION_IMAGE_BRANCH = "${registry}/${env.ECR_INGESTION_REPOSITORY}:${env.REF_TAG}"
+                    env.QUERY_IMAGE_BRANCH = "${registry}/${env.ECR_QUERY_REPOSITORY}:${env.REF_TAG}"
+                    env.INGESTION_IMAGE_LATEST = "${registry}/${env.ECR_INGESTION_REPOSITORY}:latest"
+                    env.QUERY_IMAGE_LATEST = "${registry}/${env.ECR_QUERY_REPOSITORY}:latest"
                 }
+            }
+        }
+
+        stage('Ensure ECR Repositories') {
+            steps {
+                sh './scripts/create-ecr-repos.sh'
+            }
+        }
+
+        stage('Docker Build & Tag') {
+            steps {
                 sh '''
-                    docker build -f ingestion-service/Dockerfile -t ${INGESTION_IMAGE} .
-                    docker build -f query-service/Dockerfile -t ${QUERY_IMAGE} .
-                    docker tag ${INGESTION_IMAGE} ${INGESTION_IMAGE_LATEST}
-                    docker tag ${QUERY_IMAGE} ${QUERY_IMAGE_LATEST}
+                    docker build -f ingestion-service/Dockerfile -t "${INGESTION_IMAGE}" .
+                    docker build -f query-service/Dockerfile -t "${QUERY_IMAGE}" .
+                    docker tag "${INGESTION_IMAGE}" "${INGESTION_IMAGE_BRANCH}"
+                    docker tag "${QUERY_IMAGE}" "${QUERY_IMAGE_BRANCH}"
+                    if [ "${REF_TAG}" = "main" ] || [ "${REF_TAG}" = "master" ]; then
+                      docker tag "${INGESTION_IMAGE}" "${INGESTION_IMAGE_LATEST}"
+                      docker tag "${QUERY_IMAGE}" "${QUERY_IMAGE_LATEST}"
+                    fi
                 '''
             }
         }
 
         stage('Push Images') {
-            when {
-                expression { return env.DOCKER_REGISTRY?.trim() }
-            }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-registry', usernameVariable: 'DR_USER', passwordVariable: 'DR_PASS')]) {
-                    sh '''
-                        echo "$DR_PASS" | docker login "$DOCKER_REGISTRY" -u "$DR_USER" --password-stdin
-                        docker push ${INGESTION_IMAGE}
-                        docker push ${QUERY_IMAGE}
-                        docker push ${INGESTION_IMAGE_LATEST}
-                        docker push ${QUERY_IMAGE_LATEST}
-                    '''
-                }
+                sh '''
+                    aws ecr get-login-password --region "${AWS_REGION}" \
+                      | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+                    docker push "${INGESTION_IMAGE}"
+                    docker push "${QUERY_IMAGE}"
+                    docker push "${INGESTION_IMAGE_BRANCH}"
+                    docker push "${QUERY_IMAGE_BRANCH}"
+                    if [ "${REF_TAG}" = "main" ] || [ "${REF_TAG}" = "master" ]; then
+                      docker push "${INGESTION_IMAGE_LATEST}"
+                      docker push "${QUERY_IMAGE_LATEST}"
+                    fi
+                '''
             }
         }
 
@@ -119,19 +183,20 @@ pipeline {
                 expression {
                     env.ENABLE_DEPLOY == 'true' &&
                     env.DEPLOY_TARGET == 'ec2' &&
-                    env.STAGING_SSH_HOST?.trim() &&
-                    env.DOCKER_REGISTRY?.trim()
+                    env.STAGING_SSH_HOST?.trim()
                 }
             }
             steps {
                 withCredentials([
-                    sshUserPrivateKey(credentialsId: 'staging-ssh-key', keyFileVariable: 'SSH_KEY'),
-                    usernamePassword(credentialsId: 'docker-registry', usernameVariable: 'DR_USER', passwordVariable: 'DR_PASS')
+                    sshUserPrivateKey(credentialsId: 'staging-ssh-key', keyFileVariable: 'SSH_KEY')
                 ]) {
                     sh '''
-                        export SSH_KEY_PATH="$SSH_KEY"
-                        export REGISTRY_USERNAME="$DR_USER"
-                        export REGISTRY_PASSWORD="$DR_PASS"
+                        export SSH_KEY_PATH="${SSH_KEY}"
+                        export DOCKER_REGISTRY="${ECR_REGISTRY}"
+                        export AWS_REGION="${AWS_REGION}"
+                        export INGESTION_IMAGE="${INGESTION_IMAGE}"
+                        export QUERY_IMAGE="${QUERY_IMAGE}"
+                        export OLLAMA_IMAGE="${OLLAMA_IMAGE}"
                         ./scripts/deploy-ec2-compose.sh
                     '''
                 }
@@ -148,11 +213,11 @@ pipeline {
                 sh '''
                     kubectl version --client || true
                     if [ -f k8s/overlays/dev/kustomization.yaml ]; then
-                      kubectl apply -k ${K8S_OVERLAY}
-                      kubectl rollout status deployment/ingestion-service -n ${K8S_NAMESPACE} --timeout=300s || true
-                      kubectl rollout status deployment/query-service -n ${K8S_NAMESPACE} --timeout=300s || true
-                      kubectl rollout status deployment/prometheus -n ${K8S_NAMESPACE} --timeout=120s || true
-                      kubectl rollout status deployment/grafana -n ${K8S_NAMESPACE} --timeout=120s || true
+                      kubectl apply -k "${K8S_OVERLAY}"
+                      kubectl rollout status deployment/ingestion-service -n "${K8S_NAMESPACE}" --timeout=300s || true
+                      kubectl rollout status deployment/query-service -n "${K8S_NAMESPACE}" --timeout=300s || true
+                      kubectl rollout status deployment/prometheus -n "${K8S_NAMESPACE}" --timeout=120s || true
+                      kubectl rollout status deployment/grafana -n "${K8S_NAMESPACE}" --timeout=120s || true
                     fi
                 '''
             }
@@ -160,7 +225,7 @@ pipeline {
     }
 
     post {
-        success { echo "Dev pipeline OK — namespace ${K8S_NAMESPACE}" }
+        success { echo "Dev pipeline OK — target ${DEPLOY_TARGET}" }
         failure { echo 'Dev pipeline failed.' }
         always { cleanWs(deleteDirs: true) }
     }

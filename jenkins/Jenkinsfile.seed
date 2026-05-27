@@ -1,0 +1,48 @@
+pipeline {
+    agent any
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        GIT_REPO_URL = "${env.GIT_REPO_URL ?: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git'}"
+        DEV_BRANCH = "${env.DEV_BRANCH ?: 'develop'}"
+        PROD_BRANCH = "${env.PROD_BRANCH ?: 'main'}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Generate Jenkins Jobs') {
+            steps {
+                jobDsl(
+                    targets: 'jenkins/jobs/seed.groovy',
+                    removedJobAction: 'IGNORE',
+                    removedViewAction: 'IGNORE',
+                    lookupStrategy: 'JENKINS_ROOT',
+                    additionalParameters: [
+                        GIT_REPO_URL: env.GIT_REPO_URL,
+                        DEV_BRANCH: env.DEV_BRANCH,
+                        PROD_BRANCH: env.PROD_BRANCH
+                    ]
+                )
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Seed job completed. Jobs created under deploy/dev and deploy/prod.'
+        }
+        always {
+            cleanWs(deleteDirs: true)
+        }
+    }
+}

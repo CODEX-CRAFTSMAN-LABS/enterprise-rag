@@ -2,7 +2,7 @@ FROM jenkins/jenkins:lts-jdk17
 
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends docker.io curl ca-certificates \
+    && apt-get install -y --no-install-recommends awscli ca-certificates curl docker.io git jq openssh-client unzip \
     && ARCH="$(uname -m)" \
     && case "$ARCH" in aarch64|arm64) KARCH=arm64 ;; *) KARCH=amd64 ;; esac \
     && KVER="$(curl -L -s https://dl.k8s.io/release/stable.txt)" \

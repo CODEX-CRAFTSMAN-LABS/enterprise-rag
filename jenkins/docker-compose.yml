@@ -14,6 +14,8 @@ services:
       - jenkins_home:/var/jenkins_home
       # Colima / Linux Docker socket (override DOCKER_SOCK in .env if needed)
       - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      # Optional: mount local AWS config for ECR testing with the local Jenkins container
+      - ${AWS_CONFIG:-${HOME}/.aws}:/var/jenkins_home/.aws:ro
       # kubectl config (Colima k8s context)
       - ${KUBE_CONFIG:-${HOME}/.kube/config}:/var/jenkins_home/.kube/config:ro
       # Optional: mount repo for Pipeline from local workspace (alternative to Git SCM)

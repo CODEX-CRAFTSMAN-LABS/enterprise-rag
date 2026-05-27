@@ -1,199 +1,310 @@
-# Jenkins setup — Enterprise RAG
+# Jenkins Setup - Enterprise RAG
 
-Two pipelines by **environment** (not per service). Each job builds **both** `ingestion-service` and `query-service`.
+The recommended deployment path is now:
+
+1. Jenkins runs on its own EC2 instance
+2. Jenkins builds both services
+3. Jenkins pushes immutable SHA-tagged images to ECR
+4. Jenkins deploys those exact images to the app EC2 host with Docker Compose
+
+Two pipelines still exist by environment:
 
 | Script | Job name (suggested) | Branch |
 |--------|----------------------|--------|
-| `jenkins/Jenkinsfile.dev` | `enterprise-rag-dev` | `develop` |
+| `jenkins/Jenkinsfile.dev` | `enterprise-rag-dev` | `develop` / `feature/*` |
 | `jenkins/Jenkinsfile.prod` | `enterprise-rag-prod` | `main` |
 
----
+If you want a Jenkins UI layout similar to your screenshots, use the included seed-job flow. It generates:
 
-## Step 1 — Start Jenkins locally (Docker)
+```text
+deploy/
+  dev/
+    enterprise-rag
+  prod/
+    enterprise-rag
+```
 
-From repo root:
+## Recommended Topology
+
+```text
+GitHub -> Jenkins EC2 -> Amazon ECR -> App EC2 -> Docker Compose
+```
+
+Use a separate Jenkins EC2 instance so CI work does not compete with Postgres, Kafka, Redis, Ollama, and the Java services running on the app host.
+
+## Step 1 - Bootstrap the Jenkins EC2 host
+
+If you want to launch the Jenkins EC2 instance from AWS CLI first:
 
 ```bash
-# Colima users: point at Colima's Docker socket
-cp jenkins/.env.example jenkins/.env
-# Edit jenkins/.env — uncomment:
-#   DOCKER_SOCK=${HOME}/.colima/default/docker.sock
+export AWS_REGION=<your-region>
+export AMI_ID=<ubuntu-ami-id>
+export SUBNET_ID=<subnet-id>
+export SECURITY_GROUP_ID=<sg-id>
+export KEY_NAME=<ec2-key-name>
+export IAM_INSTANCE_PROFILE=<jenkins-instance-profile-name>
+./scripts/provision-jenkins-ec2.sh
+```
 
+Then SSH into the created host and continue with the bootstrap below.
+
+Launch a dedicated Ubuntu EC2 instance for Jenkins, SSH into it as `ubuntu`, and run:
+
+```bash
+chmod +x scripts/bootstrap-jenkins-ubuntu.sh
+./scripts/bootstrap-jenkins-ubuntu.sh
+```
+
+That script installs:
+
+- Jenkins
+- Docker / Docker Compose
+- Java 17
+- AWS CLI
+- Git / SSH client / jq / unzip
+
+It also adds both your login user and the `jenkins` user to the `docker` group.
+
+After the script finishes:
+
+```bash
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+```
+
+Open `http://<jenkins-ec2-public-ip>:8080`.
+
+After first login, install these plugins from **Manage Jenkins -> Plugins**:
+
+- `Job DSL`
+- `Folders`
+- `Pipeline: Stage View`
+- `Git`
+- `Docker Pipeline`
+- `Credentials Binding`
+- `Timestamper`
+- `Workspace Cleanup`
+- `JUnit`
+- `SonarQube Scanner`
+
+## Step 2 - Attach AWS IAM roles
+
+### Jenkins EC2 IAM role
+
+Attach an IAM role that can:
+
+- push to ECR
+- read ECR repo metadata
+
+Minimum capabilities:
+
+- `ecr:GetAuthorizationToken`
+- `ecr:BatchCheckLayerAvailability`
+- `ecr:CompleteLayerUpload`
+- `ecr:DescribeRepositories`
+- `ecr:CreateRepository`
+- `ecr:InitiateLayerUpload`
+- `ecr:PutImage`
+- `ecr:UploadLayerPart`
+- `ecr:PutLifecyclePolicy`
+
+### App EC2 IAM role
+
+Attach an IAM role that can pull from ECR:
+
+- `ecr:GetAuthorizationToken`
+- `ecr:BatchGetImage`
+- `ecr:GetDownloadUrlForLayer`
+- `ecr:BatchCheckLayerAvailability`
+
+The app EC2 bootstrap script now installs AWS CLI so the deploy script can log in to ECR on-host.
+
+## Step 3 - Create the ECR repositories
+
+From Jenkins EC2, your laptop, or any machine with AWS credentials:
+
+```bash
+export AWS_REGION=<your-region>
+./scripts/create-ecr-repos.sh
+```
+
+Default repositories:
+
+- `enterprise-rag-ingestion-service`
+- `enterprise-rag-query-service`
+
+The script creates missing repositories as immutable and applies a basic lifecycle policy.
+
+## Step 4 - Jenkins global tools
+
+In **Manage Jenkins -> Tools**:
+
+| Tool | Name (must match) | Value |
+|------|-------------------|-------|
+| JDK | `jdk-17` | Java 17 |
+
+The pipeline expects the JDK tool name to be exactly `jdk-17`.
+
+## Step 5 - Jenkins credentials
+
+In **Manage Jenkins -> Credentials -> System -> Global** add:
+
+| ID | Type | Required | Notes |
+|----|------|----------|-------|
+| `staging-ssh-key` | SSH private key | Yes | Private key that Jenkins uses to SSH into the app EC2 host |
+| SonarQube server | Jenkins system config | Optional | Named `SonarQube` if you want the Jenkins Sonar stage enabled |
+
+You no longer need the old `docker-registry` username/password credential for the ECR path.
+
+## Step 6 - Create the Jenkins job
+
+1. **New Item** -> `enterprise-rag-dev` -> **Pipeline**
+2. In **Pipeline**:
+   - **Definition:** Pipeline script from SCM
+   - **SCM:** Git
+   - **Repository URL:** your GitHub repository URL
+   - **Branch:** `*/develop` or the branch you want Jenkins to track
+   - **Script Path:** `jenkins/Jenkinsfile.dev`
+3. Save
+
+## Optional - Create the exact foldered Jenkins setup
+
+To get a structure like the screenshots you shared, create one seed job and let it generate the real jobs.
+
+### Create the seed job
+
+1. **New Item** -> `seed-job` -> **Pipeline**
+2. In **Pipeline**:
+   - **Definition:** Pipeline script from SCM
+   - **SCM:** Git
+   - **Repository URL:** `https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git`
+   - **Branch:** `*/main`
+   - **Script Path:** `jenkins/Jenkinsfile.seed`
+3. Save
+4. Open `seed-job` -> **Configure** -> add these environment variables if needed:
+
+| Name | Default |
+|------|---------|
+| `GIT_REPO_URL` | `https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git` |
+| `DEV_BRANCH` | `develop` |
+| `PROD_BRANCH` | `main` |
+
+5. Click **Build Now**
+
+After the seed job runs, Jenkins will create:
+
+- `deploy/dev/enterprise-rag`
+- `deploy/prod/enterprise-rag`
+
+This is the easiest way to mirror the same style of Jenkins layout shown in your photos.
+
+## Step 7 - Required job environment variables
+
+Set these in the job configuration or the Jenkins folder/job environment:
+
+| Name | Example | Why |
+|------|---------|-----|
+| `AWS_REGION` | `eu-north-1` | Region for ECR auth and repo creation |
+| `AWS_ACCOUNT_ID` | `123456789012` | Used to derive the ECR registry if `ECR_REGISTRY` is not set |
+| `ECR_REGISTRY` | `123456789012.dkr.ecr.eu-north-1.amazonaws.com` | Optional explicit registry override |
+| `ENABLE_DEPLOY` | `true` | Enables the EC2 deployment stage |
+| `ENABLE_SONAR` | `true` or `false` | Enables the Sonar stage in Jenkins |
+| `DEPLOY_TARGET` | `ec2` | Keeps the dev job on the EC2 Compose path |
+| `STAGING_SSH_HOST` | `ec2-public-dns-or-ip` | App EC2 host Jenkins deploys to |
+| `STAGING_SSH_USER` | `ubuntu` | Default Ubuntu EC2 SSH user |
+| `STAGING_PATH` | `/opt/enterprise-rag` | Remote deployment directory |
+| `OLLAMA_IMAGE` | `alpine/ollama:0.23.2` | Smaller CPU-only image for small EC2 hosts |
+
+## Step 8 - Bootstrap the app EC2 host
+
+On the app EC2 instance:
+
+```bash
+chmod +x scripts/bootstrap-ec2-ubuntu.sh
+./scripts/bootstrap-ec2-ubuntu.sh
+```
+
+That script now installs Docker, Docker Compose, and AWS CLI. Attach the ECR pull IAM role before running Jenkins deployments.
+
+## What the dev pipeline now does
+
+`jenkins/Jenkinsfile.dev` now follows this flow:
+
+1. Checkout
+2. Build and test
+3. Coverage gate
+4. Optional Sonar
+5. Derive immutable image tag `sha-<12-char-commit>`
+6. Ensure ECR repositories exist
+7. Build both service images
+8. Push SHA-tagged images to ECR
+9. Push branch tag for convenience
+10. Deploy the exact SHA-tagged images to the app EC2 host
+11. Wait for `ingestion-service` and `query-service` health checks to pass
+
+## Local Jenkins (optional)
+
+For local Jenkins container testing:
+
+```bash
+cp jenkins/.env.example jenkins/.env
 docker compose -f jenkins/docker-compose.yml up -d --build
 ```
 
-Open **http://localhost:8080**
+The local Jenkins container now includes:
 
-Initial admin password:
+- AWS CLI
+- Docker
+- kubectl
+- Git / SSH client
 
-```bash
-docker exec rag-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
-```
-
-Complete the setup wizard (install suggested plugins is OK; our image already bundles core plugins).
-
----
-
-## Step 2 — Global tool configuration
-
-**Manage Jenkins → Tools**
-
-| Tool | Name (must match) | Path / version |
-|------|-------------------|----------------|
-| JDK | `jdk-17` | Java 17 (bundled or `/opt/java/openjdk`) |
-
-The Jenkins image is `lts-jdk17`; in the job you can use **JDK installer** or **System JDK** named exactly `jdk-17`.
-
----
-
-## Step 3 — Credentials (minimum for first run)
-
-**Manage Jenkins → Credentials → System → Global**
-
-For a **first pipeline run without Sonar/deploy**, you can skip credentials and set job environment variables (Step 5).
-
-When ready for full dev pipeline:
-
-| ID | Type | Notes |
-|----|------|--------|
-| `docker-registry` | Username/password | Only if `DOCKER_REGISTRY` is set |
-| `staging-ssh-key` | SSH private key | Required for EC2 Compose deploys |
-| SonarQube server | — | Named **`SonarQube`** in Configure System (optional) |
-
-**Kubernetes:** The dev Jenkinsfile runs `kubectl` on the agent. The local compose file mounts `~/.kube/config`. Ensure context works:
+If you want local ECR access, mount your local AWS config by setting:
 
 ```bash
-kubectl config use-context colima   # or your cluster
-kubectl get nodes
+AWS_CONFIG=${HOME}/.aws
 ```
 
----
+in `jenkins/.env`.
 
-## Step 4 — Create the dev Pipeline job
+## Deployment Files Used
 
-1. **New Item** → name: `enterprise-rag-dev` → **Pipeline** → OK  
-2. **General** → optionally check **Discard old builds**  
-3. **Pipeline** section:
-   - **Definition:** Pipeline script from SCM  
-   - **SCM:** Git  
-   - **Repository URL:** your fork/clone URL (or `file:///workspace/enterprise-rag` is *not* supported for SCM — use a real Git remote or see “Local Git” below)  
-   - **Branch:** `*/develop` or `*/main` (match your branch)  
-   - **Script Path:** `jenkins/Jenkinsfile.dev`  
-4. Save → **Build Now**
+Important files in the ECR -> EC2 flow:
 
-### Local Git remote (no GitHub yet)
-
-```bash
-cd /path/to/enterprise-rag
-git init
-git add .
-git commit -m "initial"
-# Use file:// URL in Jenkins only if Jenkins can read the path inside the container;
-# easier: push to GitHub/GitLab and use HTTPS URL in the job.
-```
-
----
-
-## Step 5 — First build (recommended env vars)
-
-**Job → Configure → Environment variables** (or **Pipeline** → environment in a wrapper — use **Build Environment** → **Inject environment variables**):
-
-| Name | Value | Why |
-|------|--------|-----|
-| `ENABLE_SONAR` | `false` | No Sonar server yet |
-| `ENABLE_DEPLOY` | `false` | Deploy optional for first run |
-| `ENABLE_CHECKMARX` | `false` | Dev default |
-| `DEPLOY_TARGET` | `ec2` | Preferred staging path |
-| `DOCKER_REGISTRY` | `ghcr.io` | Registry host for pushed images |
-| `IMAGE_NAMESPACE` | `codex-craftsman-labs` | Lowercase GHCR namespace |
-| `STAGING_SSH_HOST` | `ec2-public-dns` | Target staging VM |
-| `STAGING_SSH_USER` | `ubuntu` | Default Ubuntu EC2 user |
-| `STAGING_PATH` | `/opt/enterprise-rag` | Remote compose directory |
-
-Stages that will run:
-
-1. Checkout  
-2. Build & Test (`./gradlew clean build jacocoAggregatedReport`)  
-3. Coverage gate  
-4. Docker Build (both images)  
-5. Skip Push / Deploy / Sonar  
-
-When staging is ready:
-
-```bash
-DOCKER_REGISTRY=ghcr.io
-IMAGE_NAMESPACE=codex-craftsman-labs
-ENABLE_DEPLOY=true
-```
-
-The dev pipeline will then:
-
-1. Push both service images to the configured registry
-2. SSH to the EC2 host
-3. Copy `docker-compose.yml` + `infra/`
-4. Run `docker compose pull && docker compose up -d`
-
-If you still want the old Kubernetes path:
-
-```bash
-DEPLOY_TARGET=k8s
-ENABLE_DEPLOY=true
-```
-
-and ensure `kubectl apply -k k8s/overlays/dev` works from the host.
-
----
-
-## Step 6 — Prod job (later)
-
-Duplicate the dev job or create `enterprise-rag-prod`:
-
-- **Script Path:** `jenkins/Jenkinsfile.prod`  
-- **Branch:** `main`  
-- Stricter: Sonar quality gate, optional Checkmarx, **manual approval** before prod deploy  
-
----
-
-## Pipeline stages (reference)
-
-```
-Checkout
-  → Build & Test (whole monorepo)
-  → Coverage Gate
-  → SonarQube (optional)
-  → Docker Build  ← ingestion-service + query-service images
-  → Push Images (if DOCKER_REGISTRY set)
-  → Deploy to EC2 Compose (preferred) or Kubernetes
-```
-
----
+- `jenkins/Jenkinsfile.dev`
+- `jenkins/Jenkinsfile.seed`
+- `jenkins/jobs/seed.groovy`
+- `scripts/provision-jenkins-ec2.sh`
+- `scripts/create-ecr-repos.sh`
+- `scripts/deploy-ec2-compose.sh`
+- `scripts/verify-compose-health.sh`
+- `scripts/bootstrap-jenkins-ubuntu.sh`
+- `scripts/bootstrap-ec2-ubuntu.sh`
+- `docker-compose.yml`
+- `docker-compose.ec2.override.yml`
 
 ## Troubleshooting
 
 | Issue | Fix |
 |-------|-----|
-| `docker: not found` / permission denied | Use `jenkins/.env` `DOCKER_SOCK` for Colima; container runs as `root` in local compose |
-| `kubectl: connection refused` | Start cluster: `colima start --kubernetes`; `kubectl config use-context colima` |
-| `jdk-17` not found | Add JDK 17 tool named exactly `jdk-17` in Global Tools |
-| Sonar fails | Set `ENABLE_SONAR=false` until SonarQube server is configured |
-| EC2 deploy fails over SSH | Verify `staging-ssh-key`, `STAGING_SSH_HOST`, and that Docker is installed on the VM |
-| EC2 deploy fails pulling images | Verify `docker-registry` credentials can pull from `DOCKER_REGISTRY` |
-| Deploy fails (CrashLoop) | K8s overlay has no Postgres/Kafka/Ollama — use Docker Compose for full stack or add infra manifests |
-| Gradle OOM on agent | Job env: `GRADLE_OPTS=-Dorg.gradle.daemon=false -Xmx1024m` |
+| `Unable to locate credentials` in Jenkins | Verify the Jenkins EC2 instance role or AWS credentials on the host |
+| `docker: permission denied` on Jenkins EC2 | Re-login after group changes or run `newgrp docker` |
+| `docker login` to ECR fails on app EC2 | Verify AWS CLI is installed and the app EC2 IAM role has ECR pull permissions |
+| Deploy succeeds but services stay unhealthy | Run `docker compose ps` and `docker logs` on the app EC2 host; the deploy script now prints service logs on health-check failure |
+| `jdk-17` not found | Configure Jenkins global tools with the exact name `jdk-17` |
+| Sonar fails in Jenkins | Set `ENABLE_SONAR=false` until the Jenkins Sonar server configuration exists |
+| EC2 host is too small for default Ollama image | Keep `OLLAMA_IMAGE=alpine/ollama:0.23.2` and use `docker-compose.ec2.override.yml` |
 
----
+## Deferred Domain / HTTPS Phase
 
-## Stop Jenkins
+Domain mapping was intentionally deferred so deployment can stabilize first. The follow-up runbook is in `jenkins/DOMAIN-HTTPS.md`.
+
+## Stop Local Jenkins
 
 ```bash
 docker compose -f jenkins/docker-compose.yml down
-# remove data: docker volume rm jenkins_jenkins_home
 ```
-
----
 
 ## Related
 
-- GitHub Actions (no Jenkins required): `.github/workflows/ci.yml`  
-- K8s deploy: `kubectl apply -k k8s/overlays/dev`  
-- Full runbook (local): `docs/getting-started/run-playbook.md`
+- GitHub Actions CI: `.github/workflows/ci.yml`
+- EC2 deploy script: `scripts/deploy-ec2-compose.sh`
+- App host bootstrap: `scripts/bootstrap-ec2-ubuntu.sh`
