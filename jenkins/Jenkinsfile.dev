@@ -1,6 +1,8 @@
-// Jenkins — DEVELOPMENT pipeline
+// Jenkins — DEVELOPMENT pipeline (full build + ECR push + deploy)
 // Job config: Pipeline from SCM → Script Path: jenkins/Jenkinsfile.dev
-// Branch: develop | feature/*
+//
+// For deploy-only (images already in ECR from GitHub Actions), use:
+//   jenkins/Jenkinsfile.deploy-ecr  or job deploy/dev/enterprise-rag-from-ecr
 //
 // Credentials:
 //   staging-ssh-key  — SSH private key for the app EC2 host
@@ -125,13 +127,18 @@ pipeline {
                     }
 
                     env.REF_TAG = branchName.toLowerCase().replaceAll('[^a-z0-9._-]', '-')
-                    env.GIT_SHA_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
-                    env.IMAGE_TAG = "sha-${env.GIT_SHA_SHORT}"
+                    env.GIT_COMMIT_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    env.GIT_SHA_SHORT = env.GIT_COMMIT_SHA.take(12)
+                    // Primary deploy tag = full Git commit SHA (matches GitHub Actions ECR tag)
+                    env.IMAGE_TAG = env.GIT_COMMIT_SHA
+                    env.IMAGE_TAG_SHORT = "sha-${env.GIT_SHA_SHORT}"
                     env.ECR_REGISTRY = registry
                     env.ECR_INGESTION_REPOSITORY = 'enterprise-rag-ingestion-service'
                     env.ECR_QUERY_REPOSITORY = 'enterprise-rag-query-service'
                     env.INGESTION_IMAGE = "${registry}/${env.ECR_INGESTION_REPOSITORY}:${env.IMAGE_TAG}"
                     env.QUERY_IMAGE = "${registry}/${env.ECR_QUERY_REPOSITORY}:${env.IMAGE_TAG}"
+                    env.INGESTION_IMAGE_SHORT = "${registry}/${env.ECR_INGESTION_REPOSITORY}:${env.IMAGE_TAG_SHORT}"
+                    env.QUERY_IMAGE_SHORT = "${registry}/${env.ECR_QUERY_REPOSITORY}:${env.IMAGE_TAG_SHORT}"
                     env.INGESTION_IMAGE_BRANCH = "${registry}/${env.ECR_INGESTION_REPOSITORY}:${env.REF_TAG}"
                     env.QUERY_IMAGE_BRANCH = "${registry}/${env.ECR_QUERY_REPOSITORY}:${env.REF_TAG}"
                     env.INGESTION_IMAGE_LATEST = "${registry}/${env.ECR_INGESTION_REPOSITORY}:latest"
@@ -151,6 +158,8 @@ pipeline {
                 sh '''
                     docker build -f ingestion-service/Dockerfile -t "${INGESTION_IMAGE}" .
                     docker build -f query-service/Dockerfile -t "${QUERY_IMAGE}" .
+                    docker tag "${INGESTION_IMAGE}" "${INGESTION_IMAGE_SHORT}"
+                    docker tag "${QUERY_IMAGE}" "${QUERY_IMAGE_SHORT}"
                     docker tag "${INGESTION_IMAGE}" "${INGESTION_IMAGE_BRANCH}"
                     docker tag "${QUERY_IMAGE}" "${QUERY_IMAGE_BRANCH}"
                     if [ "${REF_TAG}" = "main" ] || [ "${REF_TAG}" = "master" ]; then
@@ -168,12 +177,15 @@ pipeline {
                       | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
                     docker push "${INGESTION_IMAGE}"
                     docker push "${QUERY_IMAGE}"
+                    docker push "${INGESTION_IMAGE_SHORT}"
+                    docker push "${QUERY_IMAGE_SHORT}"
                     docker push "${INGESTION_IMAGE_BRANCH}"
                     docker push "${QUERY_IMAGE_BRANCH}"
                     if [ "${REF_TAG}" = "main" ] || [ "${REF_TAG}" = "master" ]; then
                       docker push "${INGESTION_IMAGE_LATEST}"
                       docker push "${QUERY_IMAGE_LATEST}"
                     fi
+                    echo "Deployed tag (Git commit SHA): ${IMAGE_TAG}"
                 '''
             }
         }

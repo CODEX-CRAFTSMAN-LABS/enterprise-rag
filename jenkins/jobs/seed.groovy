@@ -63,16 +63,59 @@ def createPipelineJob = { String jobPath, String display, String jenkinsfileBran
 createPipelineJob(
     'deploy/dev/enterprise-rag',
     'enterprise-rag',
-    "*/${prodBranch}",
+    prodBranch,
     devBranch,
     'jenkins/Jenkinsfile.dev',
-    'Dev deployment pipeline for Enterprise RAG. Pick any branch under Build with Parameters.'
+    'Full pipeline: build, test, push to ECR, deploy. Pick GIT_BRANCH under Build with Parameters.'
 )
+
+pipelineJob('deploy/dev/enterprise-rag-from-ecr') {
+    displayName('enterprise-rag-from-ecr')
+    description('Deploy images already in ECR (e.g. from GitHub Actions). Set IMAGE_TAG=<full-git-commit-sha>.')
+
+    logRotator {
+        numToKeep(30)
+    }
+
+    properties {
+        parameters {
+            stringParam(
+                'IMAGE_TAG',
+                '',
+                'Full Git commit SHA (40 chars) from GitHub Actions ECR push log'
+            )
+            stringParam(
+                'GIT_BRANCH',
+                prodBranch,
+                'Branch for compose/deploy scripts checkout'
+            )
+        }
+        disableConcurrentBuilds()
+    }
+
+    definition {
+        cpsScm {
+            scm {
+                git {
+                    remote {
+                        url(gitRepoUrl)
+                    }
+                    branch(prodBranch)
+                    extensions {
+                        cleanBeforeCheckout()
+                    }
+                }
+            }
+            scriptPath('jenkins/Jenkinsfile.deploy-ecr')
+            lightweight(true)
+        }
+    }
+}
 
 createPipelineJob(
     'deploy/prod/enterprise-rag',
     'enterprise-rag',
-    "*/${prodBranch}",
+    prodBranch,
     prodBranch,
     'jenkins/Jenkinsfile.prod',
     'Production deployment pipeline for Enterprise RAG. Pick any branch under Build with Parameters.'

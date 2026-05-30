@@ -153,13 +153,41 @@ JaCoCo guide: local **`docs/operations/code-coverage.md`**
 | Platform | Config |
 |----------|--------|
 | **GitHub Actions** | `.github/workflows/ci.yml` — runs on **all branches** (push + PR) |
-| **Jenkins Dev** | `jenkins/Jenkinsfile.dev` → namespace `enterprise-rag-dev` |
+| **Jenkins Dev** | `jenkins/Jenkinsfile.dev` → ECR SHA image push + EC2 Compose deploy |
 | **Jenkins Prod** | `jenkins/Jenkinsfile.prod` → namespace `enterprise-rag-prod` |
-| **Jenkins local setup** | [jenkins/README.md](jenkins/README.md) + `docker compose -f jenkins/docker-compose.yml up -d --build` |
-| **Registry-backed staging** | GHCR image push in `.github/workflows/ci.yml` + `scripts/bootstrap-ec2-ubuntu.sh` + `scripts/deploy-ec2-compose.sh` |
+| **Jenkins setup** | [jenkins/README.md](jenkins/README.md) + `scripts/bootstrap-jenkins-ubuntu.sh` + optional `jenkins/Jenkinsfile.seed` |
+| **Registry-backed staging** | Amazon ECR image push from Jenkins + `scripts/bootstrap-ec2-ubuntu.sh` + `scripts/deploy-ec2-compose.sh` |
 | **Coverage** | JaCoCo → `build/reports/jacoco/aggregated/html/` |
 | **SonarQube** | `sonar-project.properties` |
 | **Checkmarx** | `checkmarx/checkmarx-config.yml` (prod pipeline) |
+
+### Jenkins -> ECR -> EC2
+
+The recommended deployment path is:
+
+1. Jenkins builds immutable images tagged with the full Git commit SHA
+2. Jenkins pushes both service images to Amazon ECR
+3. Jenkins deploys that exact SHA to the staging EC2 host
+4. The EC2 host pulls images from ECR and verifies service health after deploy
+
+Bootstrap scripts:
+
+```bash
+./scripts/provision-jenkins-ec2.sh     # Jenkins EC2 provisioning helper
+./scripts/bootstrap-jenkins-ubuntu.sh   # Jenkins EC2
+./scripts/bootstrap-ec2-ubuntu.sh       # App EC2
+./scripts/create-ecr-repos.sh           # ECR repositories
+```
+
+The app EC2 deploy path also supports the lightweight EC2 override in `docker-compose.ec2.override.yml`, which keeps Ollama on the CPU-only image by default for small instances.
+
+Domain and HTTPS are intentionally a follow-up phase after deployment is stable. See [jenkins/DOMAIN-HTTPS.md](jenkins/DOMAIN-HTTPS.md).
+
+If you want a foldered Jenkins UI like `deploy/dev/...` and `deploy/prod/...`, use the included seed-job:
+
+```text
+seed-job -> generates deploy/dev/enterprise-rag and deploy/prod/enterprise-rag
+```
 
 ## Kubernetes (dev / prod)
 

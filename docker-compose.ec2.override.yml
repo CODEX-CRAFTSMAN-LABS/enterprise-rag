@@ -1,0 +1,6 @@
+services:
+  ollama:
+    image: ${OLLAMA_IMAGE:-alpine/ollama:0.23.2}
+
+  ollama-init:
+    image: ${OLLAMA_IMAGE:-alpine/ollama:0.23.2}

@@ -7,7 +7,7 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg
+sudo apt-get install -y awscli ca-certificates curl gnupg jq
 
 sudo install -m 0755 -d /etc/apt/keyrings
 if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
@@ -28,7 +28,9 @@ sudo usermod -aG docker "$USER"
 
 docker --version
 docker compose version
+aws --version
 
 echo ""
-echo "Docker is installed."
+echo "Docker and AWS CLI are installed."
+echo "Attach an IAM role with ECR pull permissions before using private ECR images."
 echo "Open a new shell (or run 'newgrp docker') before using docker without sudo."

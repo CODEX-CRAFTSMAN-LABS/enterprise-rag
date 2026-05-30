@@ -1,0 +1,95 @@
+spring:
+  profiles:
+    active: local
+  application:
+    name: query-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/rag
+    username: rag
+    password: rag
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  ai:
+    model:
+      chat: ollama
+      embedding: ollama
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: llama3.2
+      embedding:
+        options:
+          model: nomic-embed-text
+    vectorstore:
+      pgvector:
+        index-type: HNSW
+        distance-type: COSINE_DISTANCE
+        dimensions: 768
+
+server:
+  port: 8082
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 0.1
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+
+platform:
+  rate-limit:
+    enabled: true
+    requests-per-minute: 120
+    redis-backed: false
+  tenant:
+    header-name: X-Tenant-Id
+    required: true
+
+query:
+  cache:
+    ttl: 1h
+  ollama:
+    request-timeout: 180s
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      embedding:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+      llm:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+  show-actuator: false
+
+logging:
+  level:
+    com.enterprise.rag: INFO

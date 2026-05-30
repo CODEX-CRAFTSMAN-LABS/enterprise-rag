@@ -7,12 +7,27 @@ The recommended deployment path is now:
 3. Jenkins pushes immutable SHA-tagged images to ECR
 4. Jenkins deploys those exact images to the app EC2 host with Docker Compose
 
-Two pipelines still exist by environment:
+Pipelines by environment:
 
-| Script | Job name (suggested) | Branch |
-|--------|----------------------|--------|
-| `jenkins/Jenkinsfile.dev` | `enterprise-rag-dev` | `develop` / `feature/*` |
-| `jenkins/Jenkinsfile.prod` | `enterprise-rag-prod` | `main` |
+| Script | Job (seed path) | Purpose |
+|--------|-----------------|---------|
+| `jenkins/Jenkinsfile.dev` | `deploy/dev/enterprise-rag` | Full build, test, push ECR, deploy |
+| `jenkins/Jenkinsfile.deploy-ecr` | `deploy/dev/enterprise-rag-from-ecr` | Deploy only — images already in ECR (e.g. from GitHub Actions) |
+| `jenkins/Jenkinsfile.prod` | `deploy/prod/enterprise-rag` | Production build + K8s deploy |
+
+**Shared ECR registry** (same tags for GitHub Actions and Jenkins):
+
+```text
+440977419877.dkr.ecr.ap-south-1.amazonaws.com/enterprise-rag-ingestion-service:<full-git-commit-sha>
+440977419877.dkr.ecr.ap-south-1.amazonaws.com/enterprise-rag-query-service:<full-git-commit-sha>
+```
+
+```text
+GitHub Actions (push) ──► ECR ◄── Jenkins (build+push OR deploy-only)
+                              │
+                              ▼
+                         App EC2 (docker compose pull)
+```
 
 If you want a Jenkins UI layout similar to your screenshots, use the included seed-job flow. It generates:
 
@@ -192,10 +207,20 @@ To get a structure like the screenshots you shared, create one seed job and let 
 
 After the seed job runs, Jenkins will create:
 
-- `deploy/dev/enterprise-rag`
+- `deploy/dev/enterprise-rag` — full build + ECR push + deploy
+- `deploy/dev/enterprise-rag-from-ecr` — deploy existing ECR tag (from GitHub Actions)
 - `deploy/prod/enterprise-rag`
 
 This is the easiest way to mirror the same style of Jenkins layout shown in your photos.
+
+## GitHub Actions + Jenkins (same ECR)
+
+1. Configure GitHub repo secrets/variables (see [.github/README.md](../.github/README.md)).
+2. Push to `main` or `develop` — Actions pushes the **full Git commit SHA** as the ECR tag (plus `sha-<12>` and branch aliases on the same digest).
+3. In Jenkins, run **`deploy/dev/enterprise-rag-from-ecr`** with **`IMAGE_TAG`** = full commit SHA from the Actions log.
+4. Or run **`deploy/dev/enterprise-rag`** to build on Jenkins, push to the same ECR repos, and deploy.
+
+Both paths use `scripts/deploy-ec2-compose.sh`, which pulls from ECR on the app host.
 
 ## Step 7 - Required job environment variables
 
@@ -233,7 +258,7 @@ That script now installs Docker, Docker Compose, and AWS CLI. Attach the ECR pul
 2. Build and test
 3. Coverage gate
 4. Optional Sonar
-5. Derive immutable image tag `sha-<12-char-commit>`
+5. Tag images with full Git commit SHA (same tag GitHub Actions uses)
 6. Ensure ECR repositories exist
 7. Build both service images
 8. Push SHA-tagged images to ECR

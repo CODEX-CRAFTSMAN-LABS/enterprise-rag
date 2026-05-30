@@ -1,0 +1,15 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.ai.model.ollama.autoconfigure.OllamaApiAutoConfiguration
+      - org.springframework.ai.model.ollama.autoconfigure.OllamaChatAutoConfiguration
+      - org.springframework.ai.model.ollama.autoconfigure.OllamaEmbeddingAutoConfiguration
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+
+platform:
+  rate-limit:
+    enabled: false
+    redis-backed: false

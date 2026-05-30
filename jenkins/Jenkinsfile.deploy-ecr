@@ -1,0 +1,170 @@
+// Jenkins — deploy pre-built images from Amazon ECR (e.g. pushed by GitHub Actions)
+// Job config: Pipeline from SCM → Script Path: jenkins/Jenkinsfile.deploy-ecr
+//
+// Build with Parameters:
+//   IMAGE_TAG     — required, full Git commit SHA (40 chars), same as GitHub Actions ECR tag
+//   GIT_BRANCH    — optional, branch to checkout for compose/scripts (default: main)
+//
+// Credentials:
+//   staging-ssh-key — SSH private key for the app EC2 host
+//
+// Required environment:
+//   AWS_REGION, AWS_ACCOUNT_ID (or ECR_REGISTRY), STAGING_SSH_HOST
+
+pipeline {
+    agent any
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        stringParam(
+            'IMAGE_TAG',
+            '',
+            'Full Git commit SHA from GitHub (40 chars) — copy from Actions log or git rev-parse HEAD'
+        )
+        stringParam(
+            'GIT_BRANCH',
+            'main',
+            'Git branch to checkout for deploy scripts and compose files'
+        )
+    }
+
+    environment {
+        ENABLE_DEPLOY = "${env.ENABLE_DEPLOY ?: 'true'}"
+        DEPLOY_TARGET = "${env.DEPLOY_TARGET ?: 'ec2'}"
+        AWS_REGION = "${env.AWS_REGION ?: ''}"
+        AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: ''}"
+        ECR_REGISTRY = "${env.ECR_REGISTRY ?: ''}"
+        STAGING_SSH_HOST = "${env.STAGING_SSH_HOST ?: ''}"
+        STAGING_SSH_USER = "${env.STAGING_SSH_USER ?: 'ubuntu'}"
+        STAGING_PATH = "${env.STAGING_PATH ?: '/opt/enterprise-rag'}"
+        OLLAMA_IMAGE = "${env.OLLAMA_IMAGE ?: 'alpine/ollama:0.23.2'}"
+        GIT_REPO_URL = "${env.GIT_REPO_URL ?: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git'}"
+        GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
+        ECR_INGESTION_REPOSITORY = 'enterprise-rag-ingestion-service'
+        ECR_QUERY_REPOSITORY = 'enterprise-rag-query-service'
+    }
+
+    stages {
+        stage('Validate parameters') {
+            steps {
+                script {
+                    def tag = params.IMAGE_TAG?.trim()
+                    if (!tag) {
+                        error('Set IMAGE_TAG to the full Git commit SHA (40 chars) from GitHub Actions.')
+                    }
+                    env.IMAGE_TAG = tag
+                }
+            }
+        }
+
+        stage('Checkout deploy files') {
+            steps {
+                script {
+                    def branch = params.GIT_BRANCH?.trim() ?: 'main'
+                    def gitArgs = [branch: branch, url: env.GIT_REPO_URL]
+                    if (env.GIT_CREDENTIALS_ID?.trim()) {
+                        gitArgs.credentialsId = env.GIT_CREDENTIALS_ID.trim()
+                    }
+                    git(gitArgs)
+                }
+                sh 'chmod +x scripts/*.sh 2>/dev/null || true'
+            }
+        }
+
+        stage('Resolve ECR image URIs') {
+            steps {
+                script {
+                    if (!env.AWS_REGION?.trim()) {
+                        error('Set AWS_REGION (e.g. ap-south-1).')
+                    }
+                    def registry = env.ECR_REGISTRY?.trim()
+                    if (!registry) {
+                        if (!env.AWS_ACCOUNT_ID?.trim()) {
+                            error('Set AWS_ACCOUNT_ID or ECR_REGISTRY.')
+                        }
+                        registry = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+                    }
+                    env.ECR_REGISTRY = registry
+                    env.INGESTION_IMAGE = "${registry}/${env.ECR_INGESTION_REPOSITORY}:${env.IMAGE_TAG}"
+                    env.QUERY_IMAGE = "${registry}/${env.ECR_QUERY_REPOSITORY}:${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Verify images in ECR') {
+            steps {
+                sh '''
+                    aws ecr describe-images \
+                      --region "${AWS_REGION}" \
+                      --repository-name "${ECR_INGESTION_REPOSITORY}" \
+                      --image-ids "imageTag=${IMAGE_TAG}" >/dev/null
+                    aws ecr describe-images \
+                      --region "${AWS_REGION}" \
+                      --repository-name "${ECR_QUERY_REPOSITORY}" \
+                      --image-ids "imageTag=${IMAGE_TAG}" >/dev/null
+                    echo "Found in ECR:"
+                    echo "  ${INGESTION_IMAGE}"
+                    echo "  ${QUERY_IMAGE}"
+                '''
+            }
+        }
+
+        stage('Deploy to EC2 (Staging)') {
+            when {
+                expression {
+                    env.ENABLE_DEPLOY == 'true' &&
+                    env.DEPLOY_TARGET == 'ec2' &&
+                    env.STAGING_SSH_HOST?.trim()
+                }
+            }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'staging-ssh-key', keyFileVariable: 'SSH_KEY')
+                ]) {
+                    sh '''
+                        export SSH_KEY_PATH="${SSH_KEY}"
+                        export DOCKER_REGISTRY="${ECR_REGISTRY}"
+                        export AWS_REGION="${AWS_REGION}"
+                        export INGESTION_IMAGE="${INGESTION_IMAGE}"
+                        export QUERY_IMAGE="${QUERY_IMAGE}"
+                        export OLLAMA_IMAGE="${OLLAMA_IMAGE}"
+                        ./scripts/deploy-ec2-compose.sh
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes (Dev)') {
+            when {
+                expression {
+                    env.ENABLE_DEPLOY == 'true' && env.DEPLOY_TARGET == 'k8s'
+                }
+            }
+            steps {
+                sh '''
+                    export K8S_NAMESPACE="${K8S_NAMESPACE:-enterprise-rag-dev}"
+                    export K8S_OVERLAY="${K8S_OVERLAY:-k8s/overlays/dev}"
+                    kubectl apply -k "${K8S_OVERLAY}"
+                    kubectl set image deployment/ingestion-service \
+                      ingestion-service="${INGESTION_IMAGE}" -n "${K8S_NAMESPACE}" || true
+                    kubectl set image deployment/query-service \
+                      query-service="${QUERY_IMAGE}" -n "${K8S_NAMESPACE}" || true
+                    kubectl rollout status deployment/ingestion-service -n "${K8S_NAMESPACE}" --timeout=300s || true
+                    kubectl rollout status deployment/query-service -n "${K8S_NAMESPACE}" --timeout=300s || true
+                '''
+            }
+        }
+    }
+
+    post {
+        success { echo "Deployed ECR tag ${IMAGE_TAG} via ${DEPLOY_TARGET}" }
+        failure { echo 'ECR deploy pipeline failed.' }
+        always { cleanWs(deleteDirs: true) }
+    }
+}

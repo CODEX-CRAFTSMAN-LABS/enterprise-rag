@@ -121,13 +121,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+  ecr-ready:
+    name: ECR push readiness
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          ECR_PUSH_ENABLED: ${{ vars.ECR_PUSH_ENABLED }}
+        run: |
+          if [ "${ECR_PUSH_ENABLED}" = "false" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "${AWS_ACCESS_KEY_ID}" ] && [ -n "${AWS_SECRET_ACCESS_KEY}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
   docker-images:
     name: Docker Images
     runs-on: ubuntu-latest
-    needs: build-and-test
+    needs:
+      - build-and-test
+      - ecr-ready
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -137,65 +158,97 @@ jobs:
       - name: Derive image tags
         id: image-meta
         shell: bash
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
-          owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           ref_tag="$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')"
-          sha_tag="sha-${GITHUB_SHA::12}"
-          echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
+          # Primary deploy tag = full Git commit SHA (same value Jenkins uses as IMAGE_TAG)
+          commit_tag="${GITHUB_SHA}"
+          short_tag="sha-${GITHUB_SHA::12}"
+          region="${AWS_REGION:-ap-south-1}"
+          account_id="${AWS_ACCOUNT_ID}"
+          if [ -z "${account_id}" ]; then
+            echo "::error::Set repository variable AWS_ACCOUNT_ID (e.g. 440977419877) for ECR pushes."
+            exit 1
+          fi
+          registry="${account_id}.dkr.ecr.${region}.amazonaws.com"
+          ingestion_repo="${ECR_INGESTION_REPOSITORY:-enterprise-rag-ingestion-service}"
+          query_repo="${ECR_QUERY_REPOSITORY:-enterprise-rag-query-service}"
           echo "ref_tag=${ref_tag}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=${sha_tag}" >> "$GITHUB_OUTPUT"
-          echo "ingestion_image=ghcr.io/${owner_lc}/enterprise-rag-ingestion-service" >> "$GITHUB_OUTPUT"
-          echo "query_image=ghcr.io/${owner_lc}/enterprise-rag-query-service" >> "$GITHUB_OUTPUT"
+          echo "commit_tag=${commit_tag}" >> "$GITHUB_OUTPUT"
+          echo "short_tag=${short_tag}" >> "$GITHUB_OUTPUT"
+          echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+          echo "ingestion_image=${registry}/${ingestion_repo}" >> "$GITHUB_OUTPUT"
+          echo "query_image=${registry}/${query_repo}" >> "$GITHUB_OUTPUT"
 
       - name: Build ingestion image
         run: |
           docker build \
             -f ingestion-service/Dockerfile \
-            -t "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
+            -t "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.commit_tag }}" \
             .
 
       - name: Build query image
         run: |
           docker build \
             -f query-service/Dockerfile \
-            -t "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
+            -t "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.commit_tag }}" \
             .
 
       - name: Verify image tags
         run: |
-          docker image inspect "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}" >/dev/null
-          docker image inspect "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}" >/dev/null
+          docker image inspect "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.commit_tag }}" >/dev/null
+          docker image inspect "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.commit_tag }}" >/dev/null
 
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request'
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Configure AWS credentials
+        if: github.event_name != 'pull_request' && needs.ecr-ready.outputs.enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
 
-      - name: Push ingestion image
-        if: github.event_name != 'pull_request'
+      - name: Login to Amazon ECR
+        if: github.event_name != 'pull_request' && needs.ecr-ready.outputs.enabled == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push images to Amazon ECR
+        if: github.event_name != 'pull_request' && needs.ecr-ready.outputs.enabled == 'true'
+        env:
+          INGESTION_IMAGE: ${{ steps.image-meta.outputs.ingestion_image }}
+          QUERY_IMAGE: ${{ steps.image-meta.outputs.query_image }}
+          COMMIT_TAG: ${{ steps.image-meta.outputs.commit_tag }}
+          SHORT_TAG: ${{ steps.image-meta.outputs.short_tag }}
+          REF_TAG: ${{ steps.image-meta.outputs.ref_tag }}
         run: |
-          docker push "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}"
-          docker tag \
-            "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
-            "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.ref_tag }}"
-          docker push "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.ref_tag }}"
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            docker tag \
-              "${{ steps.image-meta.outputs.ingestion_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
-              "${{ steps.image-meta.outputs.ingestion_image }}:latest"
-            docker push "${{ steps.image-meta.outputs.ingestion_image }}:latest"
+          # Primary tag: full Git commit SHA (deploy with this in Jenkins IMAGE_TAG)
+          docker push "${INGESTION_IMAGE}:${COMMIT_TAG}"
+          docker push "${QUERY_IMAGE}:${COMMIT_TAG}"
+          # Alias tags on the same image digest
+          docker tag "${INGESTION_IMAGE}:${COMMIT_TAG}" "${INGESTION_IMAGE}:${SHORT_TAG}"
+          docker tag "${QUERY_IMAGE}:${COMMIT_TAG}" "${QUERY_IMAGE}:${SHORT_TAG}"
+          docker push "${INGESTION_IMAGE}:${SHORT_TAG}"
+          docker push "${QUERY_IMAGE}:${SHORT_TAG}"
+          docker tag "${INGESTION_IMAGE}:${COMMIT_TAG}" "${INGESTION_IMAGE}:${REF_TAG}"
+          docker tag "${QUERY_IMAGE}:${COMMIT_TAG}" "${QUERY_IMAGE}:${REF_TAG}"
+          docker push "${INGESTION_IMAGE}:${REF_TAG}"
+          docker push "${QUERY_IMAGE}:${REF_TAG}"
+          if [ "${GITHUB_REF_NAME}" = "main" ] || [ "${GITHUB_REF_NAME}" = "master" ]; then
+            docker tag "${INGESTION_IMAGE}:${COMMIT_TAG}" "${INGESTION_IMAGE}:latest"
+            docker tag "${QUERY_IMAGE}:${COMMIT_TAG}" "${QUERY_IMAGE}:latest"
+            docker push "${INGESTION_IMAGE}:latest"
+            docker push "${QUERY_IMAGE}:latest"
           fi
+          echo "Pushed to ECR (one digest, multiple tags):"
+          echo "  commit (deploy): ${INGESTION_IMAGE}:${COMMIT_TAG}"
+          echo "  short alias:     ${INGESTION_IMAGE}:${SHORT_TAG}"
+          echo "  branch alias:    ${INGESTION_IMAGE}:${REF_TAG}"
+          echo "ECR also stores immutable digest sha256:... for this image."
+          echo "Jenkins deploy: set IMAGE_TAG=${COMMIT_TAG}"
 
-      - name: Push query image
-        if: github.event_name != 'pull_request'
+      - name: ECR push skipped
+        if: github.event_name == 'pull_request' || needs.ecr-ready.outputs.enabled != 'true'
         run: |
-          docker push "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}"
-          docker tag \
-            "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
-            "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.ref_tag }}"
-          docker push "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.ref_tag }}"
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            docker tag \
-              "${{ steps.image-meta.outputs.query_image }}:${{ steps.image-meta.outputs.sha_tag }}" \
-              "${{ steps.image-meta.outputs.query_image }}:latest"
-            docker push "${{ steps.image-meta.outputs.query_image }}:latest"
-          fi
+          echo "ECR push skipped (PR build or AWS secrets/ECR_PUSH_ENABLED not configured)."
+          echo "Local build tag would be: ${GITHUB_SHA}"
