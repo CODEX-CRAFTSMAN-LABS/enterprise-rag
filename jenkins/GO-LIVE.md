@@ -190,6 +190,7 @@ Then run `./scripts/setup-jenkins-full.sh` (skips EC2 create, still bootstraps i
 | Sonar fails | Keep `ENABLE_SONAR=false` in setup.env |
 | Ollama OOM on small EC2 | `OLLAMA_IMAGE=alpine/ollama:0.23.2` (default in setup.env) |
 | seed-job: `script not yet approved for use` | Run `./scripts/approve-jenkins-seed-script.sh` or **Manage Jenkins → In-process Script Approval → Approve**, then re-run seed-job |
+| seed-job **UNSTABLE** (`envinject` needs to be installed) | Jobs are still created. Install plugin: `envinject` in `jenkins/plugins.txt`, run `install-jenkins-plugins.sh` on Jenkins EC2, re-run seed-job for green **SUCCESS** |
 
 ---
 

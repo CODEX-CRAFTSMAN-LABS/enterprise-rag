@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PLUGIN_FILE="${ROOT_DIR}/jenkins/plugins.txt"
+PLUGIN_FILE="${PLUGIN_FILE:-${ROOT_DIR}/jenkins/plugins.txt}"
 PLUGIN_CLI_VERSION="${PLUGIN_CLI_VERSION:-2.13.2}"
 JENKINS_WAR="${JENKINS_WAR:-/usr/share/java/jenkins.war}"
 
