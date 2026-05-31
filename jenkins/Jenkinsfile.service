@@ -47,26 +47,36 @@ pipeline {
                         error('Job must set SERVICE=ingestion or SERVICE=query.')
                     }
 
-                    def branch = params.GIT_BRANCH?.trim()
-                    if (!branch) {
-                        error('Set GIT_BRANCH parameter (branch name to build).')
+                    def commitSha = params.GIT_COMMIT_SHA?.trim()?.toLowerCase()
+                    if (!commitSha) {
+                        error('Set GIT_COMMIT_SHA (full 40-character Git commit SHA).')
                     }
-                    // Accept "main", "origin/main", or "refs/heads/feature/foo"
-                    branch = branch
-                        .replaceFirst(/^refs\/heads\//, '')
-                        .replaceFirst(/^origin\//, '')
-                    env.BRANCH_NAME = branch
+                    if (!(commitSha ==~ /^[0-9a-f]{40}$/)) {
+                        error("GIT_COMMIT_SHA must be a full 40-character commit SHA (got: ${commitSha})")
+                    }
+                    env.GIT_COMMIT_SHA = commitSha
+                    env.GIT_SHA_SHORT = commitSha.take(12)
 
-                    echo "Building ${SERVICE}-service from branch: ${branch} (${ENV_NAME})"
+                    echo "Building ${SERVICE}-service at commit ${commitSha} (${ENV_NAME})"
 
-                    def gitArgs = [
-                        branch: branch,
-                        url: env.GIT_REPO_URL
+                    def extensions = [
+                        [$class: 'CloneOption', noTags: false, shallow: false, depth: 0, timeout: 20]
                     ]
+                    def userRemote = [url: env.GIT_REPO_URL]
                     if (env.GIT_CREDENTIALS_ID?.trim()) {
-                        gitArgs.credentialsId = env.GIT_CREDENTIALS_ID.trim()
+                        userRemote.credentialsId = env.GIT_CREDENTIALS_ID.trim()
                     }
-                    git(gitArgs)
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: commitSha]],
+                        extensions: extensions,
+                        userRemoteConfigs: [userRemote]
+                    ])
+
+                    def checkedOutSha = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    if (checkedOutSha != commitSha) {
+                        error("Checkout mismatch: expected ${commitSha}, got ${checkedOutSha}")
+                    }
                 }
                 sh '''
                     chmod +x gradlew
@@ -100,7 +110,7 @@ pipeline {
                     sh '''
                         if command -v sonar-scanner >/dev/null 2>&1; then
                           sonar-scanner -Dproject.settings=sonar-project.properties \
-                            -Dsonar.branch.name="${BRANCH_NAME:-main}"
+                            -Dsonar.branch.name="${GIT_COMMIT_SHA}"
                         else
                           echo "Skipping Sonar — scanner not installed"
                         fi
@@ -130,7 +140,6 @@ pipeline {
                         error('Set AWS_REGION for ECR operations.')
                     }
 
-                    def branchName = env.BRANCH_NAME?.trim()
                     def registry = env.ECR_REGISTRY?.trim()
                     if (!registry) {
                         if (!env.AWS_ACCOUNT_ID?.trim()) {
@@ -142,20 +151,14 @@ pipeline {
                     def ecrRepo = env.SERVICE == 'ingestion'
                         ? 'enterprise-rag-ingestion-service'
                         : 'enterprise-rag-query-service'
-                    def refTag = branchName.toLowerCase().replaceAll('[^a-z0-9._-]', '-')
-                    def commitSha = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    def commitSha = env.GIT_COMMIT_SHA
 
-                    env.REF_TAG = refTag
-                    env.GIT_COMMIT_SHA = commitSha
-                    env.GIT_SHA_SHORT = commitSha.take(12)
                     env.IMAGE_TAG = commitSha
                     env.IMAGE_TAG_SHORT = "sha-${env.GIT_SHA_SHORT}"
                     env.ECR_REGISTRY = registry
                     env.ECR_REPOSITORY = ecrRepo
                     env.SERVICE_IMAGE = "${registry}/${ecrRepo}:${commitSha}"
                     env.SERVICE_IMAGE_SHORT = "${registry}/${ecrRepo}:${env.IMAGE_TAG_SHORT}"
-                    env.SERVICE_IMAGE_BRANCH = "${registry}/${ecrRepo}:${refTag}"
-                    env.SERVICE_IMAGE_LATEST = "${registry}/${ecrRepo}:latest"
                     env.DEPLOY_SERVICE = env.SERVICE
                 }
             }
@@ -177,10 +180,6 @@ pipeline {
                 sh '''
                     docker build --platform linux/amd64 -f "${DOCKERFILE}" -t "${SERVICE_IMAGE}" .
                     docker tag "${SERVICE_IMAGE}" "${SERVICE_IMAGE_SHORT}"
-                    docker tag "${SERVICE_IMAGE}" "${SERVICE_IMAGE_BRANCH}"
-                    if [ "${REF_TAG}" = "main" ] || [ "${REF_TAG}" = "master" ]; then
-                      docker tag "${SERVICE_IMAGE}" "${SERVICE_IMAGE_LATEST}"
-                    fi
                 '''
             }
         }
@@ -192,10 +191,6 @@ pipeline {
                       | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
                     docker push "${SERVICE_IMAGE}"
                     docker push "${SERVICE_IMAGE_SHORT}"
-                    docker push "${SERVICE_IMAGE_BRANCH}"
-                    if [ "${REF_TAG}" = "main" ] || [ "${REF_TAG}" = "master" ]; then
-                      docker push "${SERVICE_IMAGE_LATEST}"
-                    fi
                     echo "Pushed ${SERVICE} image tag: ${IMAGE_TAG}"
                 '''
             }

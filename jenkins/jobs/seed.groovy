@@ -30,7 +30,7 @@ folder('deploy/prod') {
     description('Production deployment jobs.')
 }
 
-def createServicePipelineJob = { String jobPath, String display, String service, String envName, String jenkinsfileBranch, String defaultBuildBranch, String descriptionText ->
+def createServicePipelineJob = { String jobPath, String display, String service, String envName, String jenkinsfileBranch, String descriptionText ->
     pipelineJob(jobPath) {
         displayName(display)
         description(descriptionText)
@@ -40,7 +40,11 @@ def createServicePipelineJob = { String jobPath, String display, String service,
         }
 
         parameters {
-            stringParam('GIT_BRANCH', defaultBuildBranch, 'Branch to build and deploy (e.g. develop, main).')
+            stringParam(
+                'GIT_COMMIT_SHA',
+                '',
+                'Full Git commit SHA (40 chars) to build, push to ECR, and deploy.'
+            )
         }
 
         properties {
@@ -88,8 +92,7 @@ createServicePipelineJob(
     'ingestion',
     'dev',
     prodBranch,
-    devBranch,
-    'Dev: build rag-common + ingestion-service, push to ECR, deploy ingestion only.'
+    'Dev: build rag-common + ingestion-service at GIT_COMMIT_SHA, push to ECR, deploy ingestion only.'
 )
 
 createServicePipelineJob(
@@ -98,8 +101,7 @@ createServicePipelineJob(
     'query',
     'dev',
     prodBranch,
-    devBranch,
-    'Dev: build rag-common + query-service, push to ECR, deploy query only.'
+    'Dev: build rag-common + query-service at GIT_COMMIT_SHA, push to ECR, deploy query only.'
 )
 
 createServicePipelineJob(
@@ -108,8 +110,7 @@ createServicePipelineJob(
     'ingestion',
     'prod',
     prodBranch,
-    prodBranch,
-    'Prod: build rag-common + ingestion-service, push to ECR, deploy ingestion only.'
+    'Prod: build rag-common + ingestion-service at GIT_COMMIT_SHA, push to ECR, deploy ingestion only.'
 )
 
 createServicePipelineJob(
@@ -118,6 +119,5 @@ createServicePipelineJob(
     'query',
     'prod',
     prodBranch,
-    prodBranch,
-    'Prod: build rag-common + query-service, push to ECR, deploy query only.'
+    'Prod: build rag-common + query-service at GIT_COMMIT_SHA, push to ECR, deploy query only.'
 )
