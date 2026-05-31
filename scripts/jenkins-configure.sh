@@ -216,12 +216,16 @@ install_ssh_credential
 create_seed_job
 
 if [[ "${RUN_SEED_JOB}" == "true" ]]; then
+  if [[ -x "${ROOT_DIR}/scripts/approve-jenkins-seed-script.sh" ]]; then
+    "${ROOT_DIR}/scripts/approve-jenkins-seed-script.sh" || true
+  fi
   trigger_seed_job
 fi
 
 echo ""
 echo "Jenkins configure complete."
 echo "  UI: ${JENKINS_URL}"
-echo "  Jobs: deploy/dev/ingestion-service, deploy/dev/query-service"
+echo "  Jobs: build/ingestion-service, build/query-service"
+echo "        deploy/dev/ingestion-service, deploy/dev/query-service"
 echo ""
-echo "Next: run deploy/dev/ingestion-service then deploy/dev/query-service from the Jenkins UI."
+echo "Next: build/ingestion-service → deploy/dev/ingestion-service (same GIT_COMMIT_SHA), then query."

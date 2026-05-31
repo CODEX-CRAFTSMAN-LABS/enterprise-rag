@@ -81,7 +81,7 @@ pipeline {
 
     post {
         success {
-            echo 'Seed job completed. Per-service jobs are under deploy/dev and deploy/prod.'
+            echo 'Seed job completed. Jobs: build/{ingestion,query}-service and deploy/dev|prod/{ingestion,query}-service.'
         }
         always {
             cleanWs(deleteDirs: true)

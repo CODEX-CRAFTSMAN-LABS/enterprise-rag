@@ -175,6 +175,7 @@ Then run `./scripts/setup-jenkins-full.sh` (skips EC2 create, still bootstraps i
 | `bootstrap-ec2-ubuntu.sh` | App EC2 | Install Docker + AWS CLI |
 | `install-jenkins-plugins.sh` | Jenkins EC2 | Plugins from plugins.txt |
 | `jenkins-configure.sh` | Jenkins EC2 | JDK, SSH key, seed job |
+| `approve-jenkins-seed-script.sh` | Laptop | Approve pending Job DSL script before seed-job |
 
 ---
 
@@ -188,6 +189,7 @@ Then run `./scripts/setup-jenkins-full.sh` (skips EC2 create, still bootstraps i
 | `jdk-17` not found | Re-run `./scripts/jenkins-configure.sh` |
 | Sonar fails | Keep `ENABLE_SONAR=false` in setup.env |
 | Ollama OOM on small EC2 | `OLLAMA_IMAGE=alpine/ollama:0.23.2` (default in setup.env) |
+| seed-job: `script not yet approved for use` | Run `./scripts/approve-jenkins-seed-script.sh` or **Manage Jenkins → In-process Script Approval → Approve**, then re-run seed-job |
 
 ---
 
