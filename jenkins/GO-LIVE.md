@@ -17,10 +17,13 @@ Account defaults: **440977419877** · Region: **ap-south-1** · [AWS Console](ht
 ```text
 GitHub repo (one)
     │
-    ├── seed-job  →  creates per-service jobs
+    ├── seed-job  →  creates build/ + deploy/ jobs
     │
-    ├── deploy/dev/ingestion-service  →  rag-common + ingestion → ECR → deploy ingestion only
-    └── deploy/dev/query-service      →  rag-common + query     → ECR → deploy query only
+    ├── build/ingestion-service   →  Gradle + Docker → push ECR
+    ├── build/query-service       →  Gradle + Docker → push ECR
+    ├── deploy/dev/ingestion-service   →  pull ECR → deploy ingestion (dev)
+    ├── deploy/dev/query-service       →  pull ECR → deploy query (dev)
+    └── deploy/prod/...                →  same for prod (with approval)
 
 Jenkins EC2  ──push──►  ECR (ap-south-1)  ──pull──►  App EC2 (docker compose)
 ```
@@ -127,19 +130,14 @@ This configures:
 
 In Jenkins UI:
 
-1. **seed-job** should be green (creates jobs under `deploy/dev/`)
-2. Run **`deploy/dev/ingestion-service`**
-   - Parameter `GIT_COMMIT_SHA` → full 40-char commit (e.g. `git rev-parse HEAD`)
-   - Build
-3. Run **`deploy/dev/query-service`**
-   - Same branch
-   - Build
+1. **seed-job** should be green (creates jobs under `build/` and `deploy/dev/`)
+2. Run **`build/ingestion-service`** with `GIT_COMMIT_SHA` (e.g. `git rev-parse HEAD`)
+3. Run **`deploy/dev/ingestion-service`** with the **same** `GIT_COMMIT_SHA`
+4. Repeat for **`build/query-service`** then **`deploy/dev/query-service`**
 
-Each job:
+Build jobs: Gradle test + Docker push to ECR.
 
-- Builds `:rag-common` (shared) + its service
-- Pushes to `440977419877.dkr.ecr.ap-south-1.amazonaws.com/<service>:<git-sha>`
-- SSHs to app EC2 and restarts **only that service**
+Deploy jobs: verify image in ECR, SSH to app EC2, restart **only that service**.
 
 Verify on app host:
 
