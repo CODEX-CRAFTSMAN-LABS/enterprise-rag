@@ -1,0 +1,274 @@
+// Per-service pipeline — set on each Jenkins job via environment variables:
+//   SERVICE=ingestion | query
+//   ENV_NAME=dev | prod
+//
+// Job config: Pipeline from SCM → Script Path: jenkins/Jenkinsfile.service
+// Credentials: staging-ssh-key
+
+pipeline {
+    agent any
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        JAVA_HOME = tool name: 'jdk-17', type: 'jdk'
+        PATH = "${JAVA_HOME}/bin:${env.PATH}"
+        GRADLE_OPTS = '-Dorg.gradle.daemon=false'
+        COVERAGE_MINIMUM = "${env.COVERAGE_MINIMUM ?: '0.75'}"
+        SERVICE = "${env.SERVICE ?: ''}"
+        ENV_NAME = "${env.ENV_NAME ?: 'dev'}"
+        ENABLE_SONAR = "${env.ENABLE_SONAR ?: (env.ENV_NAME == 'prod' ? 'true' : 'false')}"
+        ENABLE_CHECKMARX = 'false'
+        ENABLE_DEPLOY = "${env.ENABLE_DEPLOY ?: 'true'}"
+        DEPLOY_TARGET = "${env.DEPLOY_TARGET ?: 'ec2'}"
+        AWS_REGION = "${env.AWS_REGION ?: ''}"
+        AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: ''}"
+        ECR_REGISTRY = "${env.ECR_REGISTRY ?: ''}"
+        STAGING_SSH_HOST = "${env.STAGING_SSH_HOST ?: ''}"
+        STAGING_SSH_USER = "${env.STAGING_SSH_USER ?: 'ubuntu'}"
+        STAGING_PATH = "${env.STAGING_PATH ?: '/opt/enterprise-rag'}"
+        OLLAMA_IMAGE = "${env.OLLAMA_IMAGE ?: 'alpine/ollama:0.23.2'}"
+        GIT_REPO_URL = "${env.GIT_REPO_URL ?: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git'}"
+        GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
+        K8S_NAMESPACE = "${env.K8S_NAMESPACE ?: (env.ENV_NAME == 'prod' ? 'enterprise-rag-prod' : 'enterprise-rag-dev')}"
+        K8S_OVERLAY = "${env.K8S_OVERLAY ?: (env.ENV_NAME == 'prod' ? 'k8s/overlays/prod' : 'k8s/overlays/dev')}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    if (!env.SERVICE?.trim() || !(env.SERVICE in ['ingestion', 'query'])) {
+                        error('Job must set SERVICE=ingestion or SERVICE=query.')
+                    }
+
+                    def branch = params.GIT_BRANCH?.trim()
+                    if (!branch) {
+                        error('Set GIT_BRANCH parameter (branch name to build).')
+                    }
+                    // Accept "main", "origin/main", or "refs/heads/feature/foo"
+                    branch = branch
+                        .replaceFirst(/^refs\/heads\//, '')
+                        .replaceFirst(/^origin\//, '')
+                    env.BRANCH_NAME = branch
+
+                    echo "Building ${SERVICE}-service from branch: ${branch} (${ENV_NAME})"
+
+                    def gitArgs = [
+                        branch: branch,
+                        url: env.GIT_REPO_URL
+                    ]
+                    if (env.GIT_CREDENTIALS_ID?.trim()) {
+                        gitArgs.credentialsId = env.GIT_CREDENTIALS_ID.trim()
+                    }
+                    git(gitArgs)
+                }
+                sh '''
+                    chmod +x gradlew
+                    if [ -d scripts ]; then
+                      chmod +x scripts/*.sh
+                    fi
+                '''
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                script {
+                    def gradleModule = env.SERVICE == 'ingestion' ? ':ingestion-service' : ':query-service'
+                    env.GRADLE_MODULE = gradleModule
+                    env.JUNIT_PATTERN = "${gradleModule.replace(':', '')}/build/test-results/test/*.xml"
+                }
+                sh './gradlew :rag-common:build ${GRADLE_MODULE}:clean ${GRADLE_MODULE}:build --no-daemon'
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '${JUNIT_PATTERN}'
+                }
+            }
+        }
+
+        stage('SonarQube') {
+            when { expression { env.ENABLE_SONAR == 'true' } }
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh '''
+                        if command -v sonar-scanner >/dev/null 2>&1; then
+                          sonar-scanner -Dproject.settings=sonar-project.properties \
+                            -Dsonar.branch.name="${BRANCH_NAME:-main}"
+                        else
+                          echo "Skipping Sonar — scanner not installed"
+                        fi
+                    '''
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            when {
+                allOf {
+                    expression { env.ENABLE_SONAR == 'true' }
+                    expression { env.ENV_NAME == 'prod' }
+                }
+            }
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Derive Image Metadata') {
+            steps {
+                script {
+                    if (!env.AWS_REGION?.trim()) {
+                        error('Set AWS_REGION for ECR operations.')
+                    }
+
+                    def branchName = env.BRANCH_NAME?.trim()
+                    def registry = env.ECR_REGISTRY?.trim()
+                    if (!registry) {
+                        if (!env.AWS_ACCOUNT_ID?.trim()) {
+                            error('Set AWS_ACCOUNT_ID or ECR_REGISTRY for ECR image publishing.')
+                        }
+                        registry = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+                    }
+
+                    def ecrRepo = env.SERVICE == 'ingestion'
+                        ? 'enterprise-rag-ingestion-service'
+                        : 'enterprise-rag-query-service'
+                    def refTag = branchName.toLowerCase().replaceAll('[^a-z0-9._-]', '-')
+                    def commitSha = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+
+                    env.REF_TAG = refTag
+                    env.GIT_COMMIT_SHA = commitSha
+                    env.GIT_SHA_SHORT = commitSha.take(12)
+                    env.IMAGE_TAG = commitSha
+                    env.IMAGE_TAG_SHORT = "sha-${env.GIT_SHA_SHORT}"
+                    env.ECR_REGISTRY = registry
+                    env.ECR_REPOSITORY = ecrRepo
+                    env.SERVICE_IMAGE = "${registry}/${ecrRepo}:${commitSha}"
+                    env.SERVICE_IMAGE_SHORT = "${registry}/${ecrRepo}:${env.IMAGE_TAG_SHORT}"
+                    env.SERVICE_IMAGE_BRANCH = "${registry}/${ecrRepo}:${refTag}"
+                    env.SERVICE_IMAGE_LATEST = "${registry}/${ecrRepo}:latest"
+                    env.DEPLOY_SERVICE = env.SERVICE
+                }
+            }
+        }
+
+        stage('Ensure ECR Repository') {
+            steps {
+                sh './scripts/create-ecr-repos.sh'
+            }
+        }
+
+        stage('Docker Build & Tag') {
+            steps {
+                script {
+                    env.DOCKERFILE = env.SERVICE == 'ingestion'
+                        ? 'ingestion-service/Dockerfile'
+                        : 'query-service/Dockerfile'
+                }
+                sh '''
+                    docker build --platform linux/amd64 -f "${DOCKERFILE}" -t "${SERVICE_IMAGE}" .
+                    docker tag "${SERVICE_IMAGE}" "${SERVICE_IMAGE_SHORT}"
+                    docker tag "${SERVICE_IMAGE}" "${SERVICE_IMAGE_BRANCH}"
+                    if [ "${REF_TAG}" = "main" ] || [ "${REF_TAG}" = "master" ]; then
+                      docker tag "${SERVICE_IMAGE}" "${SERVICE_IMAGE_LATEST}"
+                    fi
+                '''
+            }
+        }
+
+        stage('Push Image') {
+            steps {
+                sh '''
+                    aws ecr get-login-password --region "${AWS_REGION}" \
+                      | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+                    docker push "${SERVICE_IMAGE}"
+                    docker push "${SERVICE_IMAGE_SHORT}"
+                    docker push "${SERVICE_IMAGE_BRANCH}"
+                    if [ "${REF_TAG}" = "main" ] || [ "${REF_TAG}" = "master" ]; then
+                      docker push "${SERVICE_IMAGE_LATEST}"
+                    fi
+                    echo "Pushed ${SERVICE} image tag: ${IMAGE_TAG}"
+                '''
+            }
+        }
+
+        stage('Approve Deploy') {
+            when { expression { env.ENV_NAME == 'prod' } }
+            steps {
+                timeout(time: 24, unit: 'HOURS') {
+                    input message: "Deploy ${SERVICE}-service to PRODUCTION?", ok: 'Deploy', submitter: 'admin'
+                }
+            }
+        }
+
+        stage('Deploy to EC2') {
+            when {
+                expression {
+                    env.ENABLE_DEPLOY == 'true' &&
+                    env.DEPLOY_TARGET == 'ec2' &&
+                    env.STAGING_SSH_HOST?.trim()
+                }
+            }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'staging-ssh-key', keyFileVariable: 'SSH_KEY')
+                ]) {
+                    script {
+                        if (env.SERVICE == 'ingestion') {
+                            env.INGESTION_IMAGE = env.SERVICE_IMAGE
+                            env.QUERY_IMAGE = ''
+                        } else {
+                            env.QUERY_IMAGE = env.SERVICE_IMAGE
+                            env.INGESTION_IMAGE = ''
+                        }
+                    }
+                    sh '''
+                        export SSH_KEY_PATH="${SSH_KEY}"
+                        export DOCKER_REGISTRY="${ECR_REGISTRY}"
+                        export AWS_REGION="${AWS_REGION}"
+                        export DEPLOY_SERVICE="${DEPLOY_SERVICE}"
+                        export INGESTION_IMAGE="${INGESTION_IMAGE}"
+                        export QUERY_IMAGE="${QUERY_IMAGE}"
+                        export OLLAMA_IMAGE="${OLLAMA_IMAGE}"
+                        export VERIFY_SERVICE="${DEPLOY_SERVICE}"
+                        ./scripts/deploy-ec2-compose.sh
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            when {
+                expression {
+                    env.ENABLE_DEPLOY == 'true' && env.DEPLOY_TARGET == 'k8s'
+                }
+            }
+            steps {
+                script {
+                    env.K8S_DEPLOYMENT = env.SERVICE == 'ingestion'
+                        ? 'ingestion-service'
+                        : 'query-service'
+                }
+                sh '''
+                    kubectl apply -k "${K8S_OVERLAY}"
+                    kubectl rollout status deployment/${K8S_DEPLOYMENT} -n "${K8S_NAMESPACE}" --timeout=600s
+                '''
+            }
+        }
+    }
+
+    post {
+        success { echo "${ENV_NAME} ${SERVICE}-service pipeline OK — target ${DEPLOY_TARGET}" }
+        failure { echo "${ENV_NAME} ${SERVICE}-service pipeline failed." }
+        always { cleanWs(deleteDirs: true) }
+    }
+}
