@@ -4,6 +4,17 @@ def gitRepoUrl = binding.hasVariable('GIT_REPO_URL')
 def devBranch = binding.hasVariable('DEV_BRANCH') ? binding.getVariable('DEV_BRANCH') : 'develop'
 def prodBranch = binding.hasVariable('PROD_BRANCH') ? binding.getVariable('PROD_BRANCH') : 'main'
 
+def awsRegion = binding.hasVariable('AWS_REGION') ? binding.getVariable('AWS_REGION') : 'ap-south-1'
+def awsAccountId = binding.hasVariable('AWS_ACCOUNT_ID') ? binding.getVariable('AWS_ACCOUNT_ID') : '440977419877'
+def ecrRegistry = binding.hasVariable('ECR_REGISTRY') ? binding.getVariable('ECR_REGISTRY') : "${awsAccountId}.dkr.ecr.${awsRegion}.amazonaws.com"
+def stagingSshHost = binding.hasVariable('STAGING_SSH_HOST') ? binding.getVariable('STAGING_SSH_HOST') : ''
+def stagingSshUser = binding.hasVariable('STAGING_SSH_USER') ? binding.getVariable('STAGING_SSH_USER') : 'ubuntu'
+def stagingPath = binding.hasVariable('STAGING_PATH') ? binding.getVariable('STAGING_PATH') : '/opt/enterprise-rag'
+def deployTarget = binding.hasVariable('DEPLOY_TARGET') ? binding.getVariable('DEPLOY_TARGET') : 'ec2'
+def enableDeploy = binding.hasVariable('ENABLE_DEPLOY') ? binding.getVariable('ENABLE_DEPLOY') : 'true'
+def enableSonar = binding.hasVariable('ENABLE_SONAR') ? binding.getVariable('ENABLE_SONAR') : 'false'
+def ollamaImage = binding.hasVariable('OLLAMA_IMAGE') ? binding.getVariable('OLLAMA_IMAGE') : 'alpine/ollama:0.23.2'
+
 folder('deploy') {
     displayName('deploy')
     description('Deployment jobs for Enterprise RAG.')
@@ -19,7 +30,7 @@ folder('deploy/prod') {
     description('Production deployment jobs.')
 }
 
-def createPipelineJob = { String jobPath, String display, String jenkinsfileBranch, String defaultBuildBranch, String scriptPath, String descriptionText ->
+def createServicePipelineJob = { String jobPath, String display, String service, String envName, String jenkinsfileBranch, String defaultBuildBranch, String descriptionText ->
     pipelineJob(jobPath) {
         displayName(display)
         description(descriptionText)
@@ -28,15 +39,27 @@ def createPipelineJob = { String jobPath, String display, String jenkinsfileBran
             numToKeep(30)
         }
 
+        parameters {
+            stringParam('GIT_BRANCH', defaultBuildBranch, 'Branch to build and deploy (e.g. develop, main).')
+        }
+
         properties {
-            parameters {
-                stringParam(
-                    'GIT_BRANCH',
-                    defaultBuildBranch,
-                    'Git branch to build (any branch, e.g. main, develop, feature/foo)'
-                )
-            }
             disableConcurrentBuilds()
+        }
+
+        environmentVariables {
+            env('SERVICE', service)
+            env('ENV_NAME', envName)
+            env('AWS_REGION', awsRegion)
+            env('AWS_ACCOUNT_ID', awsAccountId)
+            env('ECR_REGISTRY', ecrRegistry)
+            env('STAGING_SSH_HOST', stagingSshHost)
+            env('STAGING_SSH_USER', stagingSshUser)
+            env('STAGING_PATH', stagingPath)
+            env('DEPLOY_TARGET', deployTarget)
+            env('ENABLE_DEPLOY', enableDeploy)
+            env('ENABLE_SONAR', enableSonar)
+            env('OLLAMA_IMAGE', ollamaImage)
         }
 
         definition {
@@ -46,77 +69,55 @@ def createPipelineJob = { String jobPath, String display, String jenkinsfileBran
                         remote {
                             url(gitRepoUrl)
                         }
-                        // Load Jenkinsfile from this branch; actual code branch is chosen at build time via GIT_BRANCH.
                         branch(jenkinsfileBranch)
                         extensions {
                             cleanBeforeCheckout()
                         }
                     }
                 }
-                scriptPath(scriptPath)
+                scriptPath('jenkins/Jenkinsfile.service')
                 lightweight(true)
             }
         }
     }
 }
 
-createPipelineJob(
-    'deploy/dev/enterprise-rag',
-    'enterprise-rag',
+createServicePipelineJob(
+    'deploy/dev/ingestion-service',
+    'ingestion-service',
+    'ingestion',
+    'dev',
     prodBranch,
     devBranch,
-    'jenkins/Jenkinsfile.dev',
-    'Full pipeline: build, test, push to ECR, deploy. Pick GIT_BRANCH under Build with Parameters.'
+    'Dev: build rag-common + ingestion-service, push to ECR, deploy ingestion only.'
 )
 
-pipelineJob('deploy/dev/enterprise-rag-from-ecr') {
-    displayName('enterprise-rag-from-ecr')
-    description('Deploy images already in ECR (e.g. from GitHub Actions). Set IMAGE_TAG=<full-git-commit-sha>.')
+createServicePipelineJob(
+    'deploy/dev/query-service',
+    'query-service',
+    'query',
+    'dev',
+    prodBranch,
+    devBranch,
+    'Dev: build rag-common + query-service, push to ECR, deploy query only.'
+)
 
-    logRotator {
-        numToKeep(30)
-    }
-
-    properties {
-        parameters {
-            stringParam(
-                'IMAGE_TAG',
-                '',
-                'Full Git commit SHA (40 chars) from GitHub Actions ECR push log'
-            )
-            stringParam(
-                'GIT_BRANCH',
-                prodBranch,
-                'Branch for compose/deploy scripts checkout'
-            )
-        }
-        disableConcurrentBuilds()
-    }
-
-    definition {
-        cpsScm {
-            scm {
-                git {
-                    remote {
-                        url(gitRepoUrl)
-                    }
-                    branch(prodBranch)
-                    extensions {
-                        cleanBeforeCheckout()
-                    }
-                }
-            }
-            scriptPath('jenkins/Jenkinsfile.deploy-ecr')
-            lightweight(true)
-        }
-    }
-}
-
-createPipelineJob(
-    'deploy/prod/enterprise-rag',
-    'enterprise-rag',
+createServicePipelineJob(
+    'deploy/prod/ingestion-service',
+    'ingestion-service',
+    'ingestion',
+    'prod',
     prodBranch,
     prodBranch,
-    'jenkins/Jenkinsfile.prod',
-    'Production deployment pipeline for Enterprise RAG. Pick any branch under Build with Parameters.'
+    'Prod: build rag-common + ingestion-service, push to ECR, deploy ingestion only.'
+)
+
+createServicePipelineJob(
+    'deploy/prod/query-service',
+    'query-service',
+    'query',
+    'prod',
+    prodBranch,
+    prodBranch,
+    'Prod: build rag-common + query-service, push to ECR, deploy query only.'
 )

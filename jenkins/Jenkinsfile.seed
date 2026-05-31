@@ -7,10 +7,36 @@ pipeline {
         disableConcurrentBuilds()
     }
 
+    parameters {
+        string(name: 'GIT_REPO_URL', defaultValue: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git', description: 'Git repository URL')
+        string(name: 'DEV_BRANCH', defaultValue: 'develop', description: 'Default branch for dev jobs')
+        string(name: 'PROD_BRANCH', defaultValue: 'main', description: 'Branch that holds Jenkinsfiles')
+        string(name: 'AWS_REGION', defaultValue: 'ap-south-1', description: 'AWS region')
+        string(name: 'AWS_ACCOUNT_ID', defaultValue: '440977419877', description: 'AWS account ID')
+        string(name: 'ECR_REGISTRY', defaultValue: '440977419877.dkr.ecr.ap-south-1.amazonaws.com', description: 'ECR registry URL')
+        string(name: 'STAGING_SSH_HOST', defaultValue: '', description: 'App EC2 public IP or DNS')
+        string(name: 'STAGING_SSH_USER', defaultValue: 'ubuntu', description: 'SSH user on app EC2')
+        string(name: 'STAGING_PATH', defaultValue: '/opt/enterprise-rag', description: 'Deploy path on app EC2')
+        string(name: 'DEPLOY_TARGET', defaultValue: 'ec2', description: 'ec2 or k8s')
+        string(name: 'ENABLE_DEPLOY', defaultValue: 'true', description: 'Run deploy stages')
+        string(name: 'ENABLE_SONAR', defaultValue: 'false', description: 'Run Sonar stage')
+        string(name: 'OLLAMA_IMAGE', defaultValue: 'alpine/ollama:0.23.2', description: 'Ollama image for small EC2')
+    }
+
     environment {
-        GIT_REPO_URL = "${env.GIT_REPO_URL ?: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git'}"
-        DEV_BRANCH = "${env.DEV_BRANCH ?: 'develop'}"
-        PROD_BRANCH = "${env.PROD_BRANCH ?: 'main'}"
+        GIT_REPO_URL = "${params.GIT_REPO_URL}"
+        DEV_BRANCH = "${params.DEV_BRANCH}"
+        PROD_BRANCH = "${params.PROD_BRANCH}"
+        AWS_REGION = "${params.AWS_REGION}"
+        AWS_ACCOUNT_ID = "${params.AWS_ACCOUNT_ID}"
+        ECR_REGISTRY = "${params.ECR_REGISTRY}"
+        STAGING_SSH_HOST = "${params.STAGING_SSH_HOST}"
+        STAGING_SSH_USER = "${params.STAGING_SSH_USER}"
+        STAGING_PATH = "${params.STAGING_PATH}"
+        DEPLOY_TARGET = "${params.DEPLOY_TARGET}"
+        ENABLE_DEPLOY = "${params.ENABLE_DEPLOY}"
+        ENABLE_SONAR = "${params.ENABLE_SONAR}"
+        OLLAMA_IMAGE = "${params.OLLAMA_IMAGE}"
     }
 
     stages {
@@ -22,24 +48,40 @@ pipeline {
 
         stage('Generate Jenkins Jobs') {
             steps {
-                jobDsl(
-                    targets: 'jenkins/jobs/seed.groovy',
-                    removedJobAction: 'IGNORE',
-                    removedViewAction: 'IGNORE',
-                    lookupStrategy: 'JENKINS_ROOT',
-                    additionalParameters: [
-                        GIT_REPO_URL: env.GIT_REPO_URL,
-                        DEV_BRANCH: env.DEV_BRANCH,
-                        PROD_BRANCH: env.PROD_BRANCH
-                    ]
-                )
+                script {
+                    def registry = env.ECR_REGISTRY?.trim()
+                    if (!registry) {
+                        registry = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+                    }
+                    jobDsl(
+                        targets: 'jenkins/jobs/seed.groovy',
+                        removedJobAction: 'IGNORE',
+                        removedViewAction: 'IGNORE',
+                        lookupStrategy: 'JENKINS_ROOT',
+                        additionalParameters: [
+                            GIT_REPO_URL: env.GIT_REPO_URL,
+                            DEV_BRANCH: env.DEV_BRANCH,
+                            PROD_BRANCH: env.PROD_BRANCH,
+                            AWS_REGION: env.AWS_REGION,
+                            AWS_ACCOUNT_ID: env.AWS_ACCOUNT_ID,
+                            ECR_REGISTRY: registry,
+                            STAGING_SSH_HOST: env.STAGING_SSH_HOST,
+                            STAGING_SSH_USER: env.STAGING_SSH_USER,
+                            STAGING_PATH: env.STAGING_PATH,
+                            DEPLOY_TARGET: env.DEPLOY_TARGET,
+                            ENABLE_DEPLOY: env.ENABLE_DEPLOY,
+                            ENABLE_SONAR: env.ENABLE_SONAR,
+                            OLLAMA_IMAGE: env.OLLAMA_IMAGE
+                        ]
+                    )
+                }
             }
         }
     }
 
     post {
         success {
-            echo 'Seed job completed. Jobs created under deploy/dev and deploy/prod.'
+            echo 'Seed job completed. Per-service jobs are under deploy/dev and deploy/prod.'
         }
         always {
             cleanWs(deleteDirs: true)
