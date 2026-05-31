@@ -156,8 +156,8 @@ pipeline {
         stage('Docker Build & Tag') {
             steps {
                 sh '''
-                    docker build -f ingestion-service/Dockerfile -t "${INGESTION_IMAGE}" .
-                    docker build -f query-service/Dockerfile -t "${QUERY_IMAGE}" .
+                    docker build --platform linux/amd64 -f ingestion-service/Dockerfile -t "${INGESTION_IMAGE}" .
+                    docker build --platform linux/amd64 -f query-service/Dockerfile -t "${QUERY_IMAGE}" .
                     docker tag "${INGESTION_IMAGE}" "${INGESTION_IMAGE_SHORT}"
                     docker tag "${QUERY_IMAGE}" "${QUERY_IMAGE_SHORT}"
                     docker tag "${INGESTION_IMAGE}" "${INGESTION_IMAGE_BRANCH}"
