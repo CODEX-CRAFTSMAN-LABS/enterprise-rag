@@ -1,7 +1,7 @@
 // Deploy one pre-built service image from ECR (run build/ job first).
-// Job env: SERVICE=ingestion | query, ENV_NAME=dev | prod
+// SERVICE and ENV_NAME inferred from job path (e.g. deploy/dev/ingestion-service).
+// Set STAGING_SSH_HOST on Jenkins (global env or job) if not using default below.
 // Parameter: GIT_COMMIT_SHA (40 chars) — must match image tag in ECR
-// Script path: jenkins/Jenkinsfile.deploy-service
 
 pipeline {
     agent any
@@ -14,14 +14,13 @@ pipeline {
     }
 
     environment {
-        SERVICE = "${env.SERVICE ?: ''}"
-        ENV_NAME = "${env.ENV_NAME ?: 'dev'}"
         ENABLE_DEPLOY = "${env.ENABLE_DEPLOY ?: 'true'}"
         DEPLOY_TARGET = "${env.DEPLOY_TARGET ?: 'ec2'}"
-        AWS_REGION = "${env.AWS_REGION ?: ''}"
-        AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: ''}"
+        AWS_REGION = "${env.AWS_REGION ?: 'ap-south-1'}"
+        AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: '440977419877'}"
         ECR_REGISTRY = "${env.ECR_REGISTRY ?: ''}"
         STAGING_SSH_HOST = "${env.STAGING_SSH_HOST ?: ''}"
+        JENKINSFILE_BRANCH = "${env.JENKINSFILE_BRANCH ?: 'main'}"
         STAGING_SSH_USER = "${env.STAGING_SSH_USER ?: 'ubuntu'}"
         STAGING_PATH = "${env.STAGING_PATH ?: '/opt/enterprise-rag'}"
         OLLAMA_IMAGE = "${env.OLLAMA_IMAGE ?: 'alpine/ollama:0.23.2'}"
@@ -35,8 +34,15 @@ pipeline {
         stage('Validate') {
             steps {
                 script {
+                    def jobName = env.JOB_NAME ?: ''
+                    if (jobName.contains('ingestion')) {
+                        env.SERVICE = 'ingestion'
+                    } else if (jobName.contains('query')) {
+                        env.SERVICE = 'query'
+                    }
+                    env.ENV_NAME = jobName.contains('/prod/') ? 'prod' : 'dev'
                     if (!env.SERVICE?.trim() || !(env.SERVICE in ['ingestion', 'query'])) {
-                        error('Job must set SERVICE=ingestion or SERVICE=query.')
+                        error("Cannot infer SERVICE from job name: ${jobName}")
                     }
 
                     def commitSha = params.GIT_COMMIT_SHA?.trim()?.toLowerCase()

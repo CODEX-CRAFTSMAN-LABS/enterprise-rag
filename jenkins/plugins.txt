@@ -8,7 +8,6 @@ pipeline-stage-view
 docker-workflow
 configuration-as-code
 job-dsl
-envinject
 cloudbees-folder
 junit
 sonar

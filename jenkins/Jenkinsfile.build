@@ -1,7 +1,6 @@
 // Build + test + push one service image to ECR (no deploy).
-// Job env: SERVICE=ingestion | query
-// Parameter: GIT_COMMIT_SHA (40 chars)
-// Script path: jenkins/Jenkinsfile.build
+// SERVICE is inferred from job name (build/ingestion-service | build/query-service).
+// Override AWS_* via Jenkins global env if needed. Parameter: GIT_COMMIT_SHA (40 chars).
 
 pipeline {
     agent any
@@ -17,10 +16,9 @@ pipeline {
         JAVA_HOME = tool name: 'jdk-17', type: 'jdk'
         PATH = "${JAVA_HOME}/bin:${env.PATH}"
         GRADLE_OPTS = '-Dorg.gradle.daemon=false'
-        SERVICE = "${env.SERVICE ?: ''}"
         ENABLE_SONAR = "${env.ENABLE_SONAR ?: 'false'}"
-        AWS_REGION = "${env.AWS_REGION ?: ''}"
-        AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: ''}"
+        AWS_REGION = "${env.AWS_REGION ?: 'ap-south-1'}"
+        AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: '440977419877'}"
         ECR_REGISTRY = "${env.ECR_REGISTRY ?: ''}"
         GIT_REPO_URL = "${env.GIT_REPO_URL ?: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git'}"
         GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
@@ -30,8 +28,14 @@ pipeline {
         stage('Checkout') {
             steps {
                 script {
+                    def jobName = env.JOB_NAME ?: ''
+                    if (jobName.contains('ingestion')) {
+                        env.SERVICE = 'ingestion'
+                    } else if (jobName.contains('query')) {
+                        env.SERVICE = 'query'
+                    }
                     if (!env.SERVICE?.trim() || !(env.SERVICE in ['ingestion', 'query'])) {
-                        error('Job must set SERVICE=ingestion or SERVICE=query.')
+                        error("Cannot infer SERVICE from job name: ${jobName}")
                     }
 
                     def commitSha = params.GIT_COMMIT_SHA?.trim()?.toLowerCase()

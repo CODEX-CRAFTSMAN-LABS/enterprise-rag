@@ -56,14 +56,6 @@ def createBuildJob = { String jobPath, String display, String service, String je
             disableConcurrentBuilds()
         }
 
-        environmentVariables {
-            env('SERVICE', service)
-            env('AWS_REGION', awsRegion)
-            env('AWS_ACCOUNT_ID', awsAccountId)
-            env('ECR_REGISTRY', ecrRegistry)
-            env('ENABLE_SONAR', enableSonar)
-        }
-
         definition {
             cpsScm {
                 scm {
@@ -103,21 +95,6 @@ def createDeployJob = { String jobPath, String display, String service, String e
 
         properties {
             disableConcurrentBuilds()
-        }
-
-        environmentVariables {
-            env('SERVICE', service)
-            env('ENV_NAME', envName)
-            env('JENKINSFILE_BRANCH', jenkinsfileBranch)
-            env('AWS_REGION', awsRegion)
-            env('AWS_ACCOUNT_ID', awsAccountId)
-            env('ECR_REGISTRY', ecrRegistry)
-            env('STAGING_SSH_HOST', stagingSshHost)
-            env('STAGING_SSH_USER', stagingSshUser)
-            env('STAGING_PATH', stagingPath)
-            env('DEPLOY_TARGET', deployTarget)
-            env('ENABLE_DEPLOY', enableDeploy)
-            env('OLLAMA_IMAGE', ollamaImage)
         }
 
         definition {
