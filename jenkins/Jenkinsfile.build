@@ -1,9 +1,7 @@
-// DEPRECATED — use jenkins/Jenkinsfile.build + jenkins/Jenkinsfile.deploy-service
-// (separate build/ and deploy/ jobs from seed.groovy).
-//
-// Legacy combined build+deploy pipeline.
-// Job env: SERVICE=ingestion | query, ENV_NAME=dev | prod
-// Script path: jenkins/Jenkinsfile.service
+// Build + test + push one service image to ECR (no deploy).
+// Job env: SERVICE=ingestion | query
+// Parameter: GIT_COMMIT_SHA (40 chars)
+// Script path: jenkins/Jenkinsfile.build
 
 pipeline {
     agent any
@@ -11,7 +9,7 @@ pipeline {
     options {
         buildDiscarder(logRotator(numToKeepStr: '30'))
         timestamps()
-        timeout(time: 45, unit: 'MINUTES')
+        timeout(time: 40, unit: 'MINUTES')
         disableConcurrentBuilds()
     }
 
@@ -19,24 +17,13 @@ pipeline {
         JAVA_HOME = tool name: 'jdk-17', type: 'jdk'
         PATH = "${JAVA_HOME}/bin:${env.PATH}"
         GRADLE_OPTS = '-Dorg.gradle.daemon=false'
-        COVERAGE_MINIMUM = "${env.COVERAGE_MINIMUM ?: '0.75'}"
         SERVICE = "${env.SERVICE ?: ''}"
-        ENV_NAME = "${env.ENV_NAME ?: 'dev'}"
-        ENABLE_SONAR = "${env.ENABLE_SONAR ?: (env.ENV_NAME == 'prod' ? 'true' : 'false')}"
-        ENABLE_CHECKMARX = 'false'
-        ENABLE_DEPLOY = "${env.ENABLE_DEPLOY ?: 'true'}"
-        DEPLOY_TARGET = "${env.DEPLOY_TARGET ?: 'ec2'}"
+        ENABLE_SONAR = "${env.ENABLE_SONAR ?: 'false'}"
         AWS_REGION = "${env.AWS_REGION ?: ''}"
         AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: ''}"
         ECR_REGISTRY = "${env.ECR_REGISTRY ?: ''}"
-        STAGING_SSH_HOST = "${env.STAGING_SSH_HOST ?: ''}"
-        STAGING_SSH_USER = "${env.STAGING_SSH_USER ?: 'ubuntu'}"
-        STAGING_PATH = "${env.STAGING_PATH ?: '/opt/enterprise-rag'}"
-        OLLAMA_IMAGE = "${env.OLLAMA_IMAGE ?: 'alpine/ollama:0.23.2'}"
         GIT_REPO_URL = "${env.GIT_REPO_URL ?: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git'}"
         GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
-        K8S_NAMESPACE = "${env.K8S_NAMESPACE ?: (env.ENV_NAME == 'prod' ? 'enterprise-rag-prod' : 'enterprise-rag-dev')}"
-        K8S_OVERLAY = "${env.K8S_OVERLAY ?: (env.ENV_NAME == 'prod' ? 'k8s/overlays/prod' : 'k8s/overlays/dev')}"
     }
 
     stages {
@@ -57,7 +44,7 @@ pipeline {
                     env.GIT_COMMIT_SHA = commitSha
                     env.GIT_SHA_SHORT = commitSha.take(12)
 
-                    echo "Building ${SERVICE}-service at commit ${commitSha} (${ENV_NAME})"
+                    echo "Building ${SERVICE}-service at commit ${commitSha}"
 
                     def extensions = [
                         [$class: 'CloneOption', noTags: false, shallow: false, depth: 0, timeout: 20]
@@ -119,20 +106,6 @@ pipeline {
             }
         }
 
-        stage('Quality Gate') {
-            when {
-                allOf {
-                    expression { env.ENABLE_SONAR == 'true' }
-                    expression { env.ENV_NAME == 'prod' }
-                }
-            }
-            steps {
-                timeout(time: 10, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-
         stage('Derive Image Metadata') {
             steps {
                 script {
@@ -159,7 +132,6 @@ pipeline {
                     env.ECR_REPOSITORY = ecrRepo
                     env.SERVICE_IMAGE = "${registry}/${ecrRepo}:${commitSha}"
                     env.SERVICE_IMAGE_SHORT = "${registry}/${ecrRepo}:${env.IMAGE_TAG_SHORT}"
-                    env.DEPLOY_SERVICE = env.SERVICE
                 }
             }
         }
@@ -192,78 +164,15 @@ pipeline {
                     docker push "${SERVICE_IMAGE}"
                     docker push "${SERVICE_IMAGE_SHORT}"
                     echo "Pushed ${SERVICE} image tag: ${IMAGE_TAG}"
-                '''
-            }
-        }
-
-        stage('Approve Deploy') {
-            when { expression { env.ENV_NAME == 'prod' } }
-            steps {
-                timeout(time: 24, unit: 'HOURS') {
-                    input message: "Deploy ${SERVICE}-service to PRODUCTION?", ok: 'Deploy', submitter: 'admin'
-                }
-            }
-        }
-
-        stage('Deploy to EC2') {
-            when {
-                expression {
-                    env.ENABLE_DEPLOY == 'true' &&
-                    env.DEPLOY_TARGET == 'ec2' &&
-                    env.STAGING_SSH_HOST?.trim()
-                }
-            }
-            steps {
-                withCredentials([
-                    sshUserPrivateKey(credentialsId: 'staging-ssh-key', keyFileVariable: 'SSH_KEY')
-                ]) {
-                    script {
-                        if (env.SERVICE == 'ingestion') {
-                            env.INGESTION_IMAGE = env.SERVICE_IMAGE
-                            env.QUERY_IMAGE = ''
-                        } else {
-                            env.QUERY_IMAGE = env.SERVICE_IMAGE
-                            env.INGESTION_IMAGE = ''
-                        }
-                    }
-                    sh '''
-                        export SSH_KEY_PATH="${SSH_KEY}"
-                        export DOCKER_REGISTRY="${ECR_REGISTRY}"
-                        export AWS_REGION="${AWS_REGION}"
-                        export DEPLOY_SERVICE="${DEPLOY_SERVICE}"
-                        export INGESTION_IMAGE="${INGESTION_IMAGE}"
-                        export QUERY_IMAGE="${QUERY_IMAGE}"
-                        export OLLAMA_IMAGE="${OLLAMA_IMAGE}"
-                        export VERIFY_SERVICE="${DEPLOY_SERVICE}"
-                        ./scripts/deploy-ec2-compose.sh
-                    '''
-                }
-            }
-        }
-
-        stage('Deploy to Kubernetes') {
-            when {
-                expression {
-                    env.ENABLE_DEPLOY == 'true' && env.DEPLOY_TARGET == 'k8s'
-                }
-            }
-            steps {
-                script {
-                    env.K8S_DEPLOYMENT = env.SERVICE == 'ingestion'
-                        ? 'ingestion-service'
-                        : 'query-service'
-                }
-                sh '''
-                    kubectl apply -k "${K8S_OVERLAY}"
-                    kubectl rollout status deployment/${K8S_DEPLOYMENT} -n "${K8S_NAMESPACE}" --timeout=600s
+                    echo "Deploy with: deploy/<env>/${SERVICE}-service and GIT_COMMIT_SHA=${IMAGE_TAG}"
                 '''
             }
         }
     }
 
     post {
-        success { echo "${ENV_NAME} ${SERVICE}-service pipeline OK — target ${DEPLOY_TARGET}" }
-        failure { echo "${ENV_NAME} ${SERVICE}-service pipeline failed." }
+        success { echo "Build OK — ${SERVICE}-service image ${IMAGE_TAG} in ECR" }
+        failure { echo "Build failed for ${SERVICE}-service." }
         always { cleanWs(deleteDirs: true) }
     }
 }

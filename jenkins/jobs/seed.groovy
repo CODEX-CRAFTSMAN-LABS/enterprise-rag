@@ -15,9 +15,14 @@ def enableDeploy = binding.hasVariable('ENABLE_DEPLOY') ? binding.getVariable('E
 def enableSonar = binding.hasVariable('ENABLE_SONAR') ? binding.getVariable('ENABLE_SONAR') : 'false'
 def ollamaImage = binding.hasVariable('OLLAMA_IMAGE') ? binding.getVariable('OLLAMA_IMAGE') : 'alpine/ollama:0.23.2'
 
+folder('build') {
+    displayName('build')
+    description('Build, test, and push service images to ECR (no deploy).')
+}
+
 folder('deploy') {
     displayName('deploy')
-    description('Deployment jobs for Enterprise RAG.')
+    description('Deploy pre-built images from ECR to dev or prod.')
 }
 
 folder('deploy/dev') {
@@ -30,7 +35,7 @@ folder('deploy/prod') {
     description('Production deployment jobs.')
 }
 
-def createServicePipelineJob = { String jobPath, String display, String service, String envName, String jenkinsfileBranch, String descriptionText ->
+def createBuildJob = { String jobPath, String display, String service, String jenkinsfileBranch, String descriptionText ->
     pipelineJob(jobPath) {
         displayName(display)
         description(descriptionText)
@@ -43,7 +48,56 @@ def createServicePipelineJob = { String jobPath, String display, String service,
             stringParam(
                 'GIT_COMMIT_SHA',
                 '',
-                'Full Git commit SHA (40 chars) to build, push to ECR, and deploy.'
+                'Full Git commit SHA (40 chars) to checkout, build, test, and push to ECR.'
+            )
+        }
+
+        properties {
+            disableConcurrentBuilds()
+        }
+
+        environmentVariables {
+            env('SERVICE', service)
+            env('AWS_REGION', awsRegion)
+            env('AWS_ACCOUNT_ID', awsAccountId)
+            env('ECR_REGISTRY', ecrRegistry)
+            env('ENABLE_SONAR', enableSonar)
+        }
+
+        definition {
+            cpsScm {
+                scm {
+                    git {
+                        remote {
+                            url(gitRepoUrl)
+                        }
+                        branch(jenkinsfileBranch)
+                        extensions {
+                            cleanBeforeCheckout()
+                        }
+                    }
+                }
+                scriptPath('jenkins/Jenkinsfile.build')
+                lightweight(true)
+            }
+        }
+    }
+}
+
+def createDeployJob = { String jobPath, String display, String service, String envName, String jenkinsfileBranch, String descriptionText ->
+    pipelineJob(jobPath) {
+        displayName(display)
+        description(descriptionText)
+
+        logRotator {
+            numToKeep(30)
+        }
+
+        parameters {
+            stringParam(
+                'GIT_COMMIT_SHA',
+                '',
+                'Full Git commit SHA (40 chars) — image tag in ECR (from build job).'
             )
         }
 
@@ -54,6 +108,7 @@ def createServicePipelineJob = { String jobPath, String display, String service,
         environmentVariables {
             env('SERVICE', service)
             env('ENV_NAME', envName)
+            env('JENKINSFILE_BRANCH', jenkinsfileBranch)
             env('AWS_REGION', awsRegion)
             env('AWS_ACCOUNT_ID', awsAccountId)
             env('ECR_REGISTRY', ecrRegistry)
@@ -62,7 +117,6 @@ def createServicePipelineJob = { String jobPath, String display, String service,
             env('STAGING_PATH', stagingPath)
             env('DEPLOY_TARGET', deployTarget)
             env('ENABLE_DEPLOY', enableDeploy)
-            env('ENABLE_SONAR', enableSonar)
             env('OLLAMA_IMAGE', ollamaImage)
         }
 
@@ -79,45 +133,61 @@ def createServicePipelineJob = { String jobPath, String display, String service,
                         }
                     }
                 }
-                scriptPath('jenkins/Jenkinsfile.service')
+                scriptPath('jenkins/Jenkinsfile.deploy-service')
                 lightweight(true)
             }
         }
     }
 }
 
-createServicePipelineJob(
+createBuildJob(
+    'build/ingestion-service',
+    'ingestion-service',
+    'ingestion',
+    prodBranch,
+    'Build rag-common + ingestion-service at GIT_COMMIT_SHA and push to ECR.'
+)
+
+createBuildJob(
+    'build/query-service',
+    'query-service',
+    'query',
+    prodBranch,
+    'Build rag-common + query-service at GIT_COMMIT_SHA and push to ECR.'
+)
+
+createDeployJob(
     'deploy/dev/ingestion-service',
     'ingestion-service',
     'ingestion',
     'dev',
     prodBranch,
-    'Dev: build rag-common + ingestion-service at GIT_COMMIT_SHA, push to ECR, deploy ingestion only.'
+    'Deploy ingestion-service image (GIT_COMMIT_SHA) to dev — run build/ingestion-service first.'
 )
 
-createServicePipelineJob(
+createDeployJob(
     'deploy/dev/query-service',
     'query-service',
     'query',
     'dev',
     prodBranch,
-    'Dev: build rag-common + query-service at GIT_COMMIT_SHA, push to ECR, deploy query only.'
+    'Deploy query-service image (GIT_COMMIT_SHA) to dev — run build/query-service first.'
 )
 
-createServicePipelineJob(
+createDeployJob(
     'deploy/prod/ingestion-service',
     'ingestion-service',
     'ingestion',
     'prod',
     prodBranch,
-    'Prod: build rag-common + ingestion-service at GIT_COMMIT_SHA, push to ECR, deploy ingestion only.'
+    'Deploy ingestion-service image (GIT_COMMIT_SHA) to prod — run build/ingestion-service first.'
 )
 
-createServicePipelineJob(
+createDeployJob(
     'deploy/prod/query-service',
     'query-service',
     'query',
     'prod',
     prodBranch,
-    'Prod: build rag-common + query-service at GIT_COMMIT_SHA, push to ECR, deploy query only.'
+    'Deploy query-service image (GIT_COMMIT_SHA) to prod — run build/query-service first.'
 )

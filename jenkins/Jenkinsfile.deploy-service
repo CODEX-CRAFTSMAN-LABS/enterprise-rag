@@ -1,0 +1,179 @@
+// Deploy one pre-built service image from ECR (run build/ job first).
+// Job env: SERVICE=ingestion | query, ENV_NAME=dev | prod
+// Parameter: GIT_COMMIT_SHA (40 chars) — must match image tag in ECR
+// Script path: jenkins/Jenkinsfile.deploy-service
+
+pipeline {
+    agent any
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        SERVICE = "${env.SERVICE ?: ''}"
+        ENV_NAME = "${env.ENV_NAME ?: 'dev'}"
+        ENABLE_DEPLOY = "${env.ENABLE_DEPLOY ?: 'true'}"
+        DEPLOY_TARGET = "${env.DEPLOY_TARGET ?: 'ec2'}"
+        AWS_REGION = "${env.AWS_REGION ?: ''}"
+        AWS_ACCOUNT_ID = "${env.AWS_ACCOUNT_ID ?: ''}"
+        ECR_REGISTRY = "${env.ECR_REGISTRY ?: ''}"
+        STAGING_SSH_HOST = "${env.STAGING_SSH_HOST ?: ''}"
+        STAGING_SSH_USER = "${env.STAGING_SSH_USER ?: 'ubuntu'}"
+        STAGING_PATH = "${env.STAGING_PATH ?: '/opt/enterprise-rag'}"
+        OLLAMA_IMAGE = "${env.OLLAMA_IMAGE ?: 'alpine/ollama:0.23.2'}"
+        GIT_REPO_URL = "${env.GIT_REPO_URL ?: 'https://github.com/CODEX-CRAFTSMAN-LABS/enterprise-rag.git'}"
+        GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
+        K8S_NAMESPACE = "${env.K8S_NAMESPACE ?: (env.ENV_NAME == 'prod' ? 'enterprise-rag-prod' : 'enterprise-rag-dev')}"
+        K8S_OVERLAY = "${env.K8S_OVERLAY ?: (env.ENV_NAME == 'prod' ? 'k8s/overlays/prod' : 'k8s/overlays/dev')}"
+    }
+
+    stages {
+        stage('Validate') {
+            steps {
+                script {
+                    if (!env.SERVICE?.trim() || !(env.SERVICE in ['ingestion', 'query'])) {
+                        error('Job must set SERVICE=ingestion or SERVICE=query.')
+                    }
+
+                    def commitSha = params.GIT_COMMIT_SHA?.trim()?.toLowerCase()
+                    if (!commitSha) {
+                        error('Set GIT_COMMIT_SHA (full 40-character Git commit SHA — same tag pushed by build job).')
+                    }
+                    if (!(commitSha ==~ /^[0-9a-f]{40}$/)) {
+                        error("GIT_COMMIT_SHA must be a full 40-character commit SHA (got: ${commitSha})")
+                    }
+                    env.GIT_COMMIT_SHA = commitSha
+                    env.IMAGE_TAG = commitSha
+                }
+            }
+        }
+
+        stage('Checkout deploy files') {
+            steps {
+                script {
+                    def branch = env.JENKINSFILE_BRANCH?.trim() ?: 'main'
+                    def gitArgs = [branch: branch, url: env.GIT_REPO_URL]
+                    if (env.GIT_CREDENTIALS_ID?.trim()) {
+                        gitArgs.credentialsId = env.GIT_CREDENTIALS_ID.trim()
+                    }
+                    git(gitArgs)
+                }
+                sh 'chmod +x scripts/*.sh 2>/dev/null || true'
+            }
+        }
+
+        stage('Resolve ECR image') {
+            steps {
+                script {
+                    if (!env.AWS_REGION?.trim()) {
+                        error('Set AWS_REGION for ECR operations.')
+                    }
+
+                    def registry = env.ECR_REGISTRY?.trim()
+                    if (!registry) {
+                        if (!env.AWS_ACCOUNT_ID?.trim()) {
+                            error('Set AWS_ACCOUNT_ID or ECR_REGISTRY.')
+                        }
+                        registry = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+                    }
+
+                    def ecrRepo = env.SERVICE == 'ingestion'
+                        ? 'enterprise-rag-ingestion-service'
+                        : 'enterprise-rag-query-service'
+
+                    env.ECR_REGISTRY = registry
+                    env.ECR_REPOSITORY = ecrRepo
+                    env.SERVICE_IMAGE = "${registry}/${ecrRepo}:${env.IMAGE_TAG}"
+                    env.DEPLOY_SERVICE = env.SERVICE
+
+                    if (env.SERVICE == 'ingestion') {
+                        env.INGESTION_IMAGE = env.SERVICE_IMAGE
+                        env.QUERY_IMAGE = ''
+                    } else {
+                        env.QUERY_IMAGE = env.SERVICE_IMAGE
+                        env.INGESTION_IMAGE = ''
+                    }
+                }
+            }
+        }
+
+        stage('Verify image in ECR') {
+            steps {
+                sh '''
+                    aws ecr describe-images \
+                      --region "${AWS_REGION}" \
+                      --repository-name "${ECR_REPOSITORY}" \
+                      --image-ids "imageTag=${IMAGE_TAG}" >/dev/null
+                    echo "Found image: ${SERVICE_IMAGE}"
+                '''
+            }
+        }
+
+        stage('Approve Deploy') {
+            when { expression { env.ENV_NAME == 'prod' } }
+            steps {
+                timeout(time: 24, unit: 'HOURS') {
+                    input message: "Deploy ${SERVICE}-service (${IMAGE_TAG}) to PRODUCTION?", ok: 'Deploy', submitter: 'admin'
+                }
+            }
+        }
+
+        stage('Deploy to EC2') {
+            when {
+                expression {
+                    env.ENABLE_DEPLOY == 'true' &&
+                    env.DEPLOY_TARGET == 'ec2' &&
+                    env.STAGING_SSH_HOST?.trim()
+                }
+            }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'staging-ssh-key', keyFileVariable: 'SSH_KEY')
+                ]) {
+                    sh '''
+                        export SSH_KEY_PATH="${SSH_KEY}"
+                        export DOCKER_REGISTRY="${ECR_REGISTRY}"
+                        export AWS_REGION="${AWS_REGION}"
+                        export DEPLOY_SERVICE="${DEPLOY_SERVICE}"
+                        export INGESTION_IMAGE="${INGESTION_IMAGE}"
+                        export QUERY_IMAGE="${QUERY_IMAGE}"
+                        export OLLAMA_IMAGE="${OLLAMA_IMAGE}"
+                        export VERIFY_SERVICE="${DEPLOY_SERVICE}"
+                        ./scripts/deploy-ec2-compose.sh
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            when {
+                expression {
+                    env.ENABLE_DEPLOY == 'true' && env.DEPLOY_TARGET == 'k8s'
+                }
+            }
+            steps {
+                script {
+                    env.K8S_DEPLOYMENT = env.SERVICE == 'ingestion'
+                        ? 'ingestion-service'
+                        : 'query-service'
+                }
+                sh '''
+                    kubectl apply -k "${K8S_OVERLAY}"
+                    kubectl set image deployment/${K8S_DEPLOYMENT} \
+                      ${K8S_DEPLOYMENT}="${SERVICE_IMAGE}" -n "${K8S_NAMESPACE}"
+                    kubectl rollout status deployment/${K8S_DEPLOYMENT} -n "${K8S_NAMESPACE}" --timeout=600s
+                '''
+            }
+        }
+    }
+
+    post {
+        success { echo "Deploy OK — ${ENV_NAME} ${SERVICE}-service (${IMAGE_TAG})" }
+        failure { echo "Deploy failed — ${ENV_NAME} ${SERVICE}-service." }
+        always { cleanWs(deleteDirs: true) }
+    }
+}
